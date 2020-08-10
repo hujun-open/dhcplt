@@ -133,7 +133,7 @@ func dotest(c testCase) error {
 	return nil
 }
 
-func Testdhcplt(t *testing.T) {
+func TestDHCPLT(t *testing.T) {
 	testList := []testCase{
 		testCase{
 			setup: &testSetup{
