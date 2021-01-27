@@ -24,6 +24,7 @@ import (
 	"github.com/hujun-open/myaddr"
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
+	"github.com/vishvananda/netlink"
 )
 
 //DHCPv4 lease
@@ -38,6 +39,32 @@ func newV4Lease() *v4Lease {
 	r.VLANList = etherconn.VLANs{}
 	r.IDOptions = make(dhcpv4.Options)
 	return r
+}
+
+// addrStr returns a string as "ip/prefixlen"
+func (lease *v4Lease) addrStr() string {
+	ipnet := net.IPNet{
+		IP:   lease.Lease.ACK.YourIPAddr,
+		Mask: lease.Lease.ACK.SubnetMask(),
+	}
+	return ipnet.String()
+}
+
+// Apply replace/remove the lease on specified interface,
+func (lease *v4Lease) Apply(ifname string, apply bool) error {
+	link, err := netlink.LinkByName(ifname)
+	if err != nil {
+		return err
+	}
+	addr, err := netlink.ParseAddr(lease.addrStr())
+	if err != nil {
+		return err
+	}
+	if apply {
+		return netlink.AddrReplace(link, addr)
+	}
+	return netlink.AddrDel(link, addr)
+
 }
 
 func getLeaseDir() string {
@@ -61,6 +88,7 @@ type testSetup struct {
 	V4Options     []dhcpv4.Option
 	Debug         bool
 	SaveLease     bool
+	ApplyLease    bool
 	Retry         uint
 	Timeout       time.Duration
 	//following are template str, $ID will be replaced by client id
@@ -116,6 +144,7 @@ func newSetupviaFlags(
 	Debug bool,
 	rid, cid, clntid, vclass, customop string,
 	SaveLease bool,
+	ApplyLease bool,
 ) (*testSetup, error) {
 	var r testSetup
 	if Ifname == "" {
@@ -211,6 +240,7 @@ func newSetupviaFlags(
 		r.V4Options = append(r.V4Options, cop)
 	}
 	r.SaveLease = SaveLease
+	r.ApplyLease = ApplyLease
 	return &r, nil
 }
 
@@ -371,6 +401,13 @@ func release(setup *testSetup) {
 		wg.Add(1)
 		go realeaeFunc(l, wg)
 		time.Sleep(setup.Interval)
+		if setup.ApplyLease {
+			myLog("releasing %v...", l.addrStr())
+			err = l.Apply(setup.Ifname, false)
+			if err != nil {
+				myLog("failed to release %v from if %v,%v", l.addrStr(), setup.Ifname, err)
+			}
+		}
 	}
 	wg.Wait()
 	log.Print("done")
@@ -444,9 +481,12 @@ func doDORA(ccfg clientConfig, relay *etherconn.RawSocketRelay,
 
 	result.ExecResult = resultSuccess
 	result.FinishTime = time.Now()
+	mylease.Lease = lease
+	mylease.VLANList = ccfg.VLANs
+	if ccfg.setup.ApplyLease {
+		mylease.Apply(ccfg.setup.Ifname, true)
+	}
 	if ccfg.setup.SaveLease {
-		mylease.Lease = lease
-		mylease.VLANList = ccfg.VLANs
 		saveleasechan <- mylease
 	}
 	return
@@ -590,7 +630,7 @@ func DORA(setup *testSetup) *resultSummary {
 		log.Fatalf("failed to generate per client config,%v", err)
 	}
 	//doing DORA
-	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname, etherconn.WithDebug(setup.Debug))
+	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname, etherconn.WithBPFFilter(bpfFilter), etherconn.WithDebug(setup.Debug))
 	if err != nil {
 		log.Fatalf("failed to create raw socket for if %v", setup.Ifname)
 	}
@@ -642,6 +682,10 @@ func myLog(format string, a ...interface{}) {
 	logger.Print(fmt.Sprintf("%v:%v:%v", filepath.Base(fname), linenum, msg))
 }
 
+const (
+	bpfFilter = "udp or (vlan and udp)"
+)
+
 var VERSION string
 
 func main() {
@@ -668,6 +712,7 @@ func main() {
 	svlantype := flag.Uint("svlanetype", 0x8100, "svlan tag EtherType")
 	profiling := flag.Bool("p", false, "enable profiling, only for dev use")
 	save := flag.Bool("savelease", false, "save leases")
+	apply := flag.Bool("a", false, "apply the lease")
 	customoption := flag.String("customoption", "", "add a custom option, id:value")
 	ver := flag.Bool("v", false, "show version")
 	flag.Parse()
@@ -704,6 +749,7 @@ func main() {
 		*debug,
 		*rid, *cid, *clientid, *vclass, *customoption,
 		*save,
+		*apply,
 	)
 	if err != nil {
 		log.Fatalf("invalid parameter,%v", err)
