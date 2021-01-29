@@ -133,6 +133,23 @@ func dotest(c testCase) error {
 	return nil
 }
 
+func TestDHCPv6(t *testing.T) {
+	setup := &testSetup{
+		Ifname:       "C",
+		NumOfClients: 1,
+		StartMAC:     net.HardwareAddr{0xde, 0x8f, 0x5f, 0x3a, 0x4e, 0x66},
+		EnableV6:     true,
+		Debug:        true,
+		StartVLANs: etherconn.VLANs{
+			&etherconn.VLAN{
+				ID:        100,
+				EtherType: 0x8100,
+			},
+		},
+	}
+	DORAv6(setup)
+}
+
 func TestDHCPLT(t *testing.T) {
 	testList := []testCase{
 		testCase{
