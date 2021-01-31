@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 
+	"encoding/binary"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -21,12 +22,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hujun-open/conpair"
+	"github.com/hujun-open/dhcpv6relay"
 	"github.com/hujun-open/etherconn"
 	"github.com/hujun-open/myaddr"
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
 
-	// "github.com/insomniacslk/dhcp/iana"
+	"github.com/insomniacslk/dhcp/iana"
 
 	"github.com/insomniacslk/dhcp/dhcpv6"
 	"github.com/insomniacslk/dhcp/dhcpv6/nclient6"
@@ -87,27 +90,31 @@ func getLeaseDir() string {
 }
 
 type testSetup struct {
-	Ifname        string
-	NumOfClients  uint
-	StartMAC      net.HardwareAddr
-	MacStep       uint
-	StartVLANs    etherconn.VLANs
-	VLANStep      uint
-	ExcludedVLANs []uint16
-	Interval      time.Duration
-	V4Options     []dhcpv4.Option
-	V6Options     dhcpv6.Options
-	Debug         bool
-	SaveLease     bool
-	ApplyLease    bool
-	Retry         uint
-	Timeout       time.Duration
+	Ifname         string
+	NumOfClients   uint
+	StartMAC       net.HardwareAddr
+	MacStep        uint
+	StartVLANs     etherconn.VLANs
+	VLANStep       uint
+	ExcludedVLANs  []uint16
+	Interval       time.Duration
+	V4Options      []dhcpv4.Option
+	V6Options      dhcpv6.Options //non-relay specific options
+	V6RelayOptions dhcpv6.Options // relay specific options
+	Debug          bool
+	SaveLease      bool
+	ApplyLease     bool
+	Retry          uint
+	Timeout        time.Duration
 	//following are template str, $ID will be replaced by client id
-	RID       string
-	CID       string
-	ClntID    string
+	RID    string
+	CID    string
+	ClntID string
+	//v6 specific
 	EnableV6  bool
 	V6MsgType dhcpv6.MessageType
+	NeedNA    bool
+	NeedPD    bool
 }
 
 func (setup *testSetup) excluded(vids []uint16) bool {
@@ -156,7 +163,7 @@ func newSetupviaFlags(
 	Interval time.Duration,
 	Debug bool,
 	rid, cid, clntid, vclass, customop string,
-	isv6 bool, v6mtype string,
+	isv6 bool, v6mtype string, needNA, needPD bool,
 	SaveLease bool,
 	ApplyLease bool,
 ) (*testSetup, error) {
@@ -245,6 +252,10 @@ func newSetupviaFlags(
 
 	if vclass != "" {
 		r.V4Options = append(r.V4Options, dhcpv4.OptClassIdentifier(vclass))
+		r.V6Options.Add(&dhcpv6.OptVendorClass{
+			EnterpriseNumber: BBFEnterpriseNumber,
+			Data:             [][]byte{[]byte(vclass)},
+		})
 	}
 	if customop != "" {
 		cop, err := parseCustomOptionStr(customop)
@@ -272,15 +283,18 @@ func newSetupviaFlags(
 	default:
 		r.V6MsgType = dhcpv6.MessageTypeSolicit
 	}
+	r.NeedNA = needNA
+	r.NeedPD = needPD
 	return &r, nil
 }
 
 type clientConfig struct {
-	Mac       net.HardwareAddr
-	VLANs     etherconn.VLANs
-	V4Options []dhcpv4.Option
-	V6Options dhcpv6.Options
-	setup     *testSetup
+	Mac            net.HardwareAddr
+	VLANs          etherconn.VLANs
+	V4Options      []dhcpv4.Option
+	V6Options      dhcpv6.Options
+	V6RelayOptions dhcpv6.Options
+	setup          *testSetup
 }
 
 func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
@@ -358,14 +372,14 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 			subOptList := []dhcpv4.Option{}
 			if setup.RID != "" {
 				subOptList = append(subOptList, dhcpv4.OptGeneric(dhcpv4.AgentRemoteIDSubOption, []byte(genStrFunc(setup.RID, i))))
-				ccfg.V6Options.Add(&dhcpv6.OptRemoteID{
+				ccfg.V6RelayOptions.Add(&dhcpv6.OptRemoteID{
 					EnterpriseNumber: BBFEnterpriseNumber,
 					RemoteID:         []byte(genStrFunc(setup.RID, i)),
 				})
 			}
 			if setup.CID != "" {
 				subOptList = append(subOptList, dhcpv4.OptGeneric(dhcpv4.AgentCircuitIDSubOption, []byte(genStrFunc(setup.CID, i))))
-
+				ccfg.V6RelayOptions.Add(dhcpv6.OptInterfaceID([]byte((genStrFunc(setup.CID, i)))))
 			}
 
 			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptRelayAgentInfo(subOptList...))
@@ -374,6 +388,12 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 		if setup.ClntID != "" {
 			myLog("gened clnt id is %v", genStrFunc(setup.ClntID, i))
 			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptClientIdentifier([]byte(genStrFunc(setup.ClntID, i))))
+			ccfg.V6Options.Add(dhcpv6.OptClientID(
+				dhcpv6.Duid{
+					Type:                 dhcpv6.DUID_EN,
+					EnterpriseNumber:     BBFEnterpriseNumber,
+					EnterpriseIdentifier: []byte(genStrFunc(setup.ClntID, i)),
+				}))
 		}
 		r = append(r, ccfg)
 	}
@@ -394,7 +414,8 @@ func release(setup *testSetup) {
 		log.Fatal(err)
 	}
 
-	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname, etherconn.WithDebug(setup.Debug))
+	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname,
+		etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
 	if err != nil {
 		log.Fatalf("failed to create raw socket for if %v", setup.Ifname)
 	}
@@ -478,15 +499,21 @@ func DORAv6(setup *testSetup) {
 		log.Fatalf("failed to generate per client config,%v", err)
 	}
 	//doing DORA
-	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname, etherconn.WithBPFFilter(bpfFilter), etherconn.WithDebug(setup.Debug))
+	relay, err := etherconn.NewRawSocketRelay(context.Background(),
+		setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
+		etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
+	//etherconn.WithDefaultReceival(true)
 	if err != nil {
 		log.Fatalf("failed to create raw socket for if %v", setup.Ifname)
 	}
 	// defer relay.Stop()
 	//start NDPProxy
-	llaList := make(map[string]net.HardwareAddr)
+	llaList := make(map[string]L2Encap)
 	for _, cfg := range ccfgList {
-		llaList[myaddr.GetLLAFromMac(cfg.Mac).String()] = cfg.Mac
+		llaList[myaddr.GetLLAFromMac(cfg.Mac).String()] = L2Encap{
+			HwAddr: cfg.Mac,
+			Vlans:  cfg.VLANs,
+		}
 	}
 	proxy := NewNDPProxyFromRelay(llaList, relay)
 	log.Printf("proxy created %v", proxy.targets)
@@ -496,30 +523,107 @@ func DORAv6(setup *testSetup) {
 
 }
 
+func getIAIDviaTime(delta int64) (r [4]byte) {
+	buf := make([]byte, binary.MaxVarintLen64)
+	binary.PutVarint(buf, time.Now().UnixNano()+delta)
+	log.Printf("buf is %+v", buf)
+	copy(r[:], buf[:4])
+	return
+}
+
+func buildSolicit(ccfg clientConfig) (*dhcpv6.Message, error) {
+	optModList := []dhcpv6.Modifier{}
+	for _, o := range ccfg.V6Options {
+		optModList = append(optModList, dhcpv6.WithOption(o))
+	}
+	if ccfg.setup.NeedNA {
+		optModList = append(optModList, dhcpv6.WithIAID(getIAIDviaTime(0)))
+	}
+	if ccfg.setup.NeedPD {
+		optModList = append(optModList, dhcpv6.WithIAPD(getIAIDviaTime(1)))
+	}
+	duid := dhcpv6.Duid{
+		Type:          dhcpv6.DUID_LLT,
+		HwType:        iana.HWTypeEthernet,
+		Time:          dhcpv6.GetTime(),
+		LinkLayerAddr: ccfg.Mac,
+	}
+	m, err := dhcpv6.NewMessage()
+	if err != nil {
+		return nil, err
+	}
+	m.MessageType = dhcpv6.MessageTypeSolicit
+	m.AddOption(dhcpv6.OptClientID(duid))
+	m.AddOption(dhcpv6.OptRequestedOption(
+		dhcpv6.OptionDNSRecursiveNameServer,
+		dhcpv6.OptionDomainSearchList,
+	))
+	m.AddOption(dhcpv6.OptElapsedTime(0))
+	for _, mod := range optModList {
+		mod(m)
+	}
+	return m, nil
+
+}
+
 func doDORAv6(ccfg clientConfig, relay *etherconn.RawSocketRelay) {
 	econn := etherconn.NewEtherConn(ccfg.Mac, relay, etherconn.WithVLANs(ccfg.VLANs))
-	rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v", myaddr.GetLLAFromMac(ccfg.Mac), dhcpv6.DefaultClientPort), econn, etherconn.WithAcceptAny(true))
+	rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
+		myaddr.GetLLAFromMac(ccfg.Mac),
+		dhcpv6.DefaultClientPort), econn, etherconn.WithAcceptAny(true))
 	if err != nil {
 		//return nil, fmt.Errorf()
 		log.Fatalf("failed to create raw udp conn for %v,%v", "fe80::a00:27ff:fea4:9999", err)
 		return
 	}
-	clnt, err := nclient6.NewWithConn(rudpconn, ccfg.Mac, nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets())
+	solicitMsg, err := buildSolicit(ccfg)
 	if err != nil {
-		log.Fatalf("failed to create client,%v", err)
+		log.Fatalf("failed to create solicit msg, %v", err)
 	}
-	// clientID := dhcpv6.Duid{
-	// 	Type:          dhcpv6.DUID_LL,
-	// 	HwType:        iana.HWTypeEthernet,
-	// 	LinkLayerAddr: mymac,
-	// }
-	adv, err := clnt.Solicit(context.Background())
-	if err != nil {
-		log.Fatalf("failed to recv adv,%v", err)
-	}
-	_, err = clnt.Request(context.Background(), adv)
-	if err != nil {
-		log.Fatalf("failed to recv adv,%v", err)
+	switch ccfg.setup.V6MsgType {
+	case dhcpv6.MessageTypeSolicit:
+
+		clnt, err := nclient6.NewWithConn(rudpconn, ccfg.Mac, nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets())
+		if err != nil {
+			log.Fatalf("failed to create client,%v", err)
+		}
+
+		adv, err := clnt.SendAndRead(context.Background(),
+			nclient6.AllDHCPRelayAgentsAndServers, solicitMsg,
+			nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise))
+		if err != nil {
+			log.Fatalf("failed recv adv, %v", err)
+		}
+		_, err = clnt.Request(context.Background(), adv)
+		if err != nil {
+			log.Fatalf("failed to recv reply,%v", err)
+		}
+	case dhcpv6.MessageTypeRelayForward:
+		accessConClnt, accessConRelay := conpair.NewPacketConnPair()
+		clnt, err := nclient6.NewWithConn(accessConClnt, ccfg.Mac, nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets())
+		if err != nil {
+			log.Fatalf("failed to create client,%v", err)
+		}
+		ctx, canc := context.WithCancel(context.Background())
+		defer canc()
+		dhcpv6relay.NewRelayAgent(ctx,
+			&dhcpv6relay.PairDHCPConn{PacketConnPair: accessConRelay},
+			&dhcpv6relay.RUDPDHCPConn{RUDPConn: rudpconn},
+			dhcpv6relay.WithOptions(ccfg.V6RelayOptions))
+		// log.Printf("relay %v created", relay)
+		adv, err := clnt.SendAndRead(context.Background(),
+			nclient6.AllDHCPRelayAgentsAndServers, solicitMsg,
+			nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise))
+		if err != nil {
+			log.Fatalf("failed recv adv, %v", err)
+		}
+		_, err = clnt.Request(context.Background(), adv)
+		if err != nil {
+			log.Fatalf("failed to recv reply,%v", err)
+		}
+
+	default:
+		log.Fatalf("un-supported DHCPv6 msg type %v", ccfg.setup.V6MsgType)
 	}
 
 }
@@ -811,6 +915,8 @@ func main() {
 	ver := flag.Bool("v", false, "show version")
 	isV6 := flag.Bool("v6", false, "DHCPv6 client")
 	v6Mtype := flag.String("v6m", "auto", "v6 message type, auto|relay|solicit")
+	needNA := flag.Bool("iana", true, "request IANA")
+	needPD := flag.Bool("iapd", false, "request IAPD")
 	flag.Parse()
 	if *ver {
 		if VERSION == "" {
@@ -846,8 +952,9 @@ func main() {
 		*rid, *cid, *clientid, *vclass, *customoption,
 		*isV6,
 		*v6Mtype,
+		*needNA,
+		*needPD,
 		*save,
-
 		*apply,
 	)
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/hujun-open/cmprule"
 	"github.com/hujun-open/etherconn"
+	"github.com/insomniacslk/dhcp/dhcpv6"
 	"github.com/vishvananda/netlink"
 )
 
@@ -134,15 +135,20 @@ func dotest(c testCase) error {
 }
 
 func TestDHCPv6(t *testing.T) {
+
 	setup := &testSetup{
+		V6MsgType:    dhcpv6.MessageTypeRelayForward,
 		Ifname:       "C",
 		NumOfClients: 1,
 		StartMAC:     net.HardwareAddr{0xde, 0x8f, 0x5f, 0x3a, 0x4e, 0x66},
 		EnableV6:     true,
+		NeedNA:       true,
+		NeedPD:       true,
 		Debug:        true,
+		RID:          "disk-@ID",
 		StartVLANs: etherconn.VLANs{
 			&etherconn.VLAN{
-				ID:        100,
+				ID:        300,
 				EtherType: 0x8100,
 			},
 		},
@@ -160,6 +166,7 @@ func TestDHCPLT(t *testing.T) {
 				MacStep:      1,
 				Timeout:      3 * time.Second,
 				Retry:        2,
+
 				StartVLANs: etherconn.VLANs{
 					&etherconn.VLAN{
 						ID:        100,
@@ -381,6 +388,7 @@ func TestDHCPLT(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	log.SetFlags(log.Lshortfile | log.Ltime)
 	logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
 	result := m.Run()
 	os.Exit(result)

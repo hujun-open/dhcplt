@@ -2,8 +2,8 @@
 package main
 
 import (
-	"context"
-	"fmt"
+	// "context"
+	// "fmt"
 	"log"
 	"net"
 
@@ -12,36 +12,41 @@ import (
 	"github.com/hujun-open/etherconn"
 )
 
-type NDPProxy struct {
-	targets map[string]net.HardwareAddr //key is stringify IP
-	// mac     net.HardwareAddr
-	relay *etherconn.RawSocketRelay
-	econn *etherconn.EtherConn
+type L2Encap struct {
+	HwAddr net.HardwareAddr
+	Vlans  etherconn.VLANs
 }
 
-func NewNDPProxyFromRelay(targets map[string]net.HardwareAddr, relay *etherconn.RawSocketRelay) *NDPProxy {
+type NDPProxy struct {
+	targets map[string]L2Encap //key is stringify IP
+	relay   *etherconn.RawSocketRelay
+	econn   *etherconn.EtherConn
+}
+
+func NewNDPProxyFromRelay(targets map[string]L2Encap, relay *etherconn.RawSocketRelay) *NDPProxy {
 	r := new(NDPProxy)
 	r.relay = relay
 	r.targets = targets
-	r.econn = etherconn.NewEtherConn(net.HardwareAddr{0, 0, 0, 0, 0, 0}, r.relay, etherconn.WithRecvMulticast(true))
+	r.econn = etherconn.NewEtherConn(net.HardwareAddr{0, 0, 0, 0, 0, 0},
+		r.relay, etherconn.WithDefault())
 	go r.recv()
 	return r
 }
 
-func NewNDPProxy(targets map[string]net.HardwareAddr, ifname string) (*NDPProxy, error) {
-	bpfFilter := "icmp6 or (vlan and icmp6)"
-	relay, err := etherconn.NewRawSocketRelay(context.Background(), ifname, etherconn.WithBPFFilter(bpfFilter), etherconn.WithDebug(true))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create raw socket fzr if %v", ifname)
-	}
-	return NewNDPProxyFromRelay(targets, relay), nil
-}
+// func NewNDPProxy(targets map[string]net.HardwareAddr, ifname string) (*NDPProxy, error) {
+// 	bpfFilter := "icmp6 or (vlan and icmp6)"
+// 	relay, err := etherconn.NewRawSocketRelay(context.Background(), ifname, etherconn.WithBPFFilter(bpfFilter), etherconn.WithDebug(true))
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to create raw socket fzr if %v", ifname)
+// 	}
+// 	return NewNDPProxyFromRelay(targets, relay), nil
+// }
 func (proxy *NDPProxy) processReq(pbuf []byte, peermac net.HardwareAddr) {
 	gpkt := gopacket.NewPacket(pbuf, layers.LayerTypeIPv6, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
 	if icmp6Layer := gpkt.Layer(layers.LayerTypeICMPv6NeighborSolicitation); icmp6Layer != nil {
 		req := icmp6Layer.(*layers.ICMPv6NeighborSolicitation)
 		log.Printf("got ND req for %v, while have %+v", req.TargetAddress, proxy.targets)
-		if ownmac, ok := proxy.targets[req.TargetAddress.String()]; ok {
+		if l2ep, ok := proxy.targets[req.TargetAddress.String()]; ok {
 			// for _, t := range proxy.targets {
 			// if t.Equal(req.TargetAddress) {
 			peerIPlayer := gpkt.Layer(layers.LayerTypeIPv6)
@@ -51,7 +56,7 @@ func (proxy *NDPProxy) processReq(pbuf []byte, peermac net.HardwareAddr) {
 				Options: []layers.ICMPv6Option{
 					layers.ICMPv6Option{
 						Type: layers.ICMPv6OptTargetAddress,
-						Data: []byte(ownmac),
+						Data: []byte(l2ep.HwAddr),
 					},
 				},
 			}
@@ -73,7 +78,7 @@ func (proxy *NDPProxy) processReq(pbuf []byte, peermac net.HardwareAddr) {
 				iplayer,
 				respicmp6Layer,
 				resp)
-			_, err := proxy.econn.WriteIPPktToFrom(buf.Bytes(), ownmac, peermac)
+			_, err := proxy.econn.WriteIPPktToFrom(buf.Bytes(), l2ep.HwAddr, peermac, l2ep.Vlans)
 			if err != nil {
 				log.Printf("failed to send resp, %v", err)
 			}
