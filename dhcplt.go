@@ -22,8 +22,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hujun-open/conpair"
-	"github.com/hujun-open/dhcpv6relay"
+	"dhcplt/common"
+	"dhcplt/conpair"
+	"dhcplt/dhcpv6relay"
+
 	"github.com/hujun-open/etherconn"
 	"github.com/hujun-open/myaddr"
 	"github.com/insomniacslk/dhcp/dhcpv4"
@@ -107,9 +109,10 @@ type testSetup struct {
 	Retry          uint
 	Timeout        time.Duration
 	//following are template str, $ID will be replaced by client id
-	RID    string
-	CID    string
-	ClntID string
+	RID      string
+	CID      string
+	ClntID   string
+	EnableV4 bool
 	//v6 specific
 	EnableV6  bool
 	V6MsgType dhcpv6.MessageType
@@ -163,7 +166,7 @@ func newSetupviaFlags(
 	Interval time.Duration,
 	Debug bool,
 	rid, cid, clntid, vclass, customop string,
-	isv6 bool, v6mtype string, needNA, needPD bool,
+	isv4, isv6 bool, v6mtype string, needNA, needPD bool,
 	SaveLease bool,
 	ApplyLease bool,
 ) (*testSetup, error) {
@@ -268,6 +271,7 @@ func newSetupviaFlags(
 	r.ApplyLease = ApplyLease
 	//DHCPv6
 	r.EnableV6 = isv6
+	r.EnableV4 = isv4
 
 	switch v6mtype {
 	case "relay":
@@ -386,7 +390,7 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 
 		}
 		if setup.ClntID != "" {
-			myLog("gened clnt id is %v", genStrFunc(setup.ClntID, i))
+			common.MyLog("gened clnt id is %v", genStrFunc(setup.ClntID, i))
 			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptClientIdentifier([]byte(genStrFunc(setup.ClntID, i))))
 			ccfg.V6Options.Add(dhcpv6.OptClientID(
 				dhcpv6.Duid{
@@ -427,7 +431,7 @@ func release(setup *testSetup) {
 		rudpconn, err := etherconn.NewRUDPConn(
 			myaddr.GenConnectionAddrStr("", l.Lease.ACK.YourIPAddr, 68), econn)
 		if err != nil {
-			myLog("failed to create raw udp conn for %v,%v", l.Lease.ACK.ClientHWAddr, err)
+			common.MyLog("failed to create raw udp conn for %v,%v", l.Lease.ACK.ClientHWAddr, err)
 			return
 		}
 		clntModList := []nclient4.ClientOpt{nclient4.WithHWAddr(l.Lease.ACK.ClientHWAddr)}
@@ -436,7 +440,7 @@ func release(setup *testSetup) {
 		}
 		clnt, err := nclient4.NewWithConn(rudpconn, l.Lease.ACK.ClientHWAddr, clntModList...)
 		if err != nil {
-			myLog("failed to create dhcpv4 client for %v,%v", l.Lease.ACK.ClientHWAddr, err)
+			common.MyLog("failed to create dhcpv4 client for %v,%v", l.Lease.ACK.ClientHWAddr, err)
 			return
 		}
 		modList := []dhcpv4.Modifier{}
@@ -448,7 +452,7 @@ func release(setup *testSetup) {
 		for i := 0; i < 3; i++ {
 			err = clnt.Release(l.Lease, modList...)
 			if err != nil {
-				myLog("failed to send release for %v,%v", l.Lease.ACK.ClientHWAddr, err)
+				common.MyLog("failed to send release for %v,%v", l.Lease.ACK.ClientHWAddr, err)
 				continue
 			}
 		}
@@ -457,15 +461,15 @@ func release(setup *testSetup) {
 	wg := new(sync.WaitGroup)
 	for _, l := range leaseList {
 		//create etherconn & rudpconn
-		myLog("releaseing mac %v", l.Lease.ACK.ClientHWAddr)
+		common.MyLog("releaseing mac %v", l.Lease.ACK.ClientHWAddr)
 		wg.Add(1)
 		go realeaeFunc(l, wg)
 		time.Sleep(setup.Interval)
 		if setup.ApplyLease {
-			myLog("releasing %v...", l.addrStr())
+			common.MyLog("releasing %v...", l.addrStr())
 			err = l.Apply(setup.Ifname, false)
 			if err != nil {
-				myLog("failed to release %v from if %v,%v", l.addrStr(), setup.Ifname, err)
+				common.MyLog("failed to release %v from if %v,%v", l.addrStr(), setup.Ifname, err)
 			}
 		}
 	}
@@ -493,19 +497,13 @@ func saveLease(ch chan *v4Lease, ifname string, savewg *sync.WaitGroup) {
 	return
 }
 
-func DORAv6(setup *testSetup) {
+func DORAv6(setup *testSetup, relay *etherconn.RawSocketRelay) *resultSummary {
 	ccfgList, err := genClientConfigurations(setup)
 	if err != nil {
 		log.Fatalf("failed to generate per client config,%v", err)
 	}
 	//doing DORA
-	relay, err := etherconn.NewRawSocketRelay(context.Background(),
-		setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
-		etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
-	//etherconn.WithDefaultReceival(true)
-	if err != nil {
-		log.Fatalf("failed to create raw socket for if %v", setup.Ifname)
-	}
+
 	// defer relay.Stop()
 	//start NDPProxy
 	llaList := make(map[string]L2Encap)
@@ -515,18 +513,29 @@ func DORAv6(setup *testSetup) {
 			Vlans:  cfg.VLANs,
 		}
 	}
-	proxy := NewNDPProxyFromRelay(llaList, relay)
-	log.Printf("proxy created %v", proxy.targets)
+	NewNDPProxyFromRelay(llaList, relay)
+	wg := new(sync.WaitGroup)
+	resultCh := make(chan *testResult, 16)
+	resultOutput := make(chan []*testResult)
+	go collectResults(resultCh, resultOutput)
+	testStart := time.Now()
 	for _, cfg := range ccfgList {
-		doDORAv6(cfg, relay)
+		wg.Add(1)
+		doDORAv6(cfg, relay, wg, setup.Debug, resultCh)
+		time.Sleep(setup.Interval)
 	}
-
+	wg.Wait()
+	testDuration := time.Now().Sub(testStart)
+	close(resultCh)
+	allresults := <-resultOutput
+	summary := analyzeResults(allresults, setup)
+	summary.TotalTime = testDuration
+	return summary
 }
 
 func getIAIDviaTime(delta int64) (r [4]byte) {
 	buf := make([]byte, binary.MaxVarintLen64)
 	binary.PutVarint(buf, time.Now().UnixNano()+delta)
-	log.Printf("buf is %+v", buf)
 	copy(r[:], buf[:4])
 	return
 }
@@ -566,66 +575,88 @@ func buildSolicit(ccfg clientConfig) (*dhcpv6.Message, error) {
 
 }
 
-func doDORAv6(ccfg clientConfig, relay *etherconn.RawSocketRelay) {
+func doDORAv6(ccfg clientConfig, relay *etherconn.RawSocketRelay,
+	wg *sync.WaitGroup, debug bool,
+	collectchan chan *testResult) {
+	defer wg.Done()
+	result := new(testResult)
+	result.ExecResult = resultFailure
+	defer func() {
+		result.L2EP = etherconn.NewL2EndpointFromMACVLAN(ccfg.Mac, ccfg.VLANs).GetKey()
+		collectchan <- result
+	}()
 	econn := etherconn.NewEtherConn(ccfg.Mac, relay, etherconn.WithVLANs(ccfg.VLANs))
 	rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
 		myaddr.GetLLAFromMac(ccfg.Mac),
 		dhcpv6.DefaultClientPort), econn, etherconn.WithAcceptAny(true))
 	if err != nil {
-		//return nil, fmt.Errorf()
-		log.Fatalf("failed to create raw udp conn for %v,%v", "fe80::a00:27ff:fea4:9999", err)
+		common.MyLog("failed to create raw udp conn for %v,%v", ccfg.Mac, err)
 		return
 	}
+	result.StartTime = time.Now()
 	solicitMsg, err := buildSolicit(ccfg)
 	if err != nil {
-		log.Fatalf("failed to create solicit msg, %v", err)
+		common.MyLog("failed to create solicit msg for %v, %v", ccfg.Mac, err)
+		return
+	}
+	mods := []nclient6.ClientOpt{}
+	if debug {
+		mods = []nclient6.ClientOpt{nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets()}
 	}
 	switch ccfg.setup.V6MsgType {
 	case dhcpv6.MessageTypeSolicit:
-
-		clnt, err := nclient6.NewWithConn(rudpconn, ccfg.Mac, nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets())
+		clnt, err := nclient6.NewWithConn(rudpconn, ccfg.Mac, mods...)
 		if err != nil {
-			log.Fatalf("failed to create client,%v", err)
+			common.MyLog("failed to create DHCPv6 client for %v, %v", ccfg.Mac, err)
+			return
 		}
 
 		adv, err := clnt.SendAndRead(context.Background(),
 			nclient6.AllDHCPRelayAgentsAndServers, solicitMsg,
 			nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise))
 		if err != nil {
-			log.Fatalf("failed recv adv, %v", err)
+			common.MyLog("failed recv DHCPv6 advertisement for %v, %v", ccfg.Mac, err)
+			return
 		}
 		_, err = clnt.Request(context.Background(), adv)
 		if err != nil {
-			log.Fatalf("failed to recv reply,%v", err)
+			common.MyLog("failed to recv DHCPv6 reply for %v, %v", ccfg.Mac, err)
+			return
 		}
 	case dhcpv6.MessageTypeRelayForward:
 		accessConClnt, accessConRelay := conpair.NewPacketConnPair()
-		clnt, err := nclient6.NewWithConn(accessConClnt, ccfg.Mac, nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets())
+		clnt, err := nclient6.NewWithConn(accessConClnt, ccfg.Mac, mods...)
 		if err != nil {
-			log.Fatalf("failed to create client,%v", err)
+			common.MyLog("failed to create DHCPv6 client for %v, %v", ccfg.Mac, err)
+			return
 		}
 		ctx, canc := context.WithCancel(context.Background())
 		defer canc()
 		dhcpv6relay.NewRelayAgent(ctx,
 			&dhcpv6relay.PairDHCPConn{PacketConnPair: accessConRelay},
 			&dhcpv6relay.RUDPDHCPConn{RUDPConn: rudpconn},
+			dhcpv6relay.WithLinkAddr(net.ParseIP("::")),
+			dhcpv6relay.WithPeerAddr(myaddr.GetLLAFromMac(ccfg.Mac)),
 			dhcpv6relay.WithOptions(ccfg.V6RelayOptions))
-		// log.Printf("relay %v created", relay)
 		adv, err := clnt.SendAndRead(context.Background(),
 			nclient6.AllDHCPRelayAgentsAndServers, solicitMsg,
 			nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise))
 		if err != nil {
-			log.Fatalf("failed recv adv, %v", err)
+			common.MyLog("failed recv DHCPv6 advertisement for %v, %v", ccfg.Mac, err)
+			return
 		}
 		_, err = clnt.Request(context.Background(), adv)
 		if err != nil {
-			log.Fatalf("failed to recv reply,%v", err)
+			common.MyLog("failed to recv DHCPv6 reply for %v, %v", ccfg.Mac, err)
+			return
 		}
 
 	default:
-		log.Fatalf("un-supported DHCPv6 msg type %v", ccfg.setup.V6MsgType)
+		common.MyLog("un-supported DHCPv6 msg type %v", ccfg.setup.V6MsgType)
+		return
 	}
-
+	result.FinishTime = time.Now()
+	result.ExecResult = resultSuccess
 }
 
 func doDORA(ccfg clientConfig, relay *etherconn.RawSocketRelay,
@@ -639,14 +670,14 @@ func doDORA(ccfg clientConfig, relay *etherconn.RawSocketRelay,
 		collectchan <- result
 	}()
 
-	myLog("doing DORA for %v with VLANs %v, on if %v", ccfg.Mac, ccfg.VLANs.String(), ccfg.setup.Ifname)
+	common.MyLog("doing DORA for %v with VLANs %v, on if %v", ccfg.Mac, ccfg.VLANs.String(), ccfg.setup.Ifname)
 	result.StartTime = time.Now()
 	//create etherconn & rudpconn
 	econn := etherconn.NewEtherConn(ccfg.Mac, relay, etherconn.WithVLANs(ccfg.VLANs))
 	rudpconn, err := etherconn.NewRUDPConn("0.0.0.0:68", econn, etherconn.WithAcceptAny(true))
 	if err != nil {
 		//return nil, fmt.Errorf()
-		myLog("failed to create raw udp conn for %v,%v", ccfg.Mac, err)
+		common.MyLog("failed to create raw udp conn for %v,%v", ccfg.Mac, err)
 		return
 	}
 	mylease := newV4Lease()
@@ -660,7 +691,7 @@ func doDORA(ccfg clientConfig, relay *etherconn.RawSocketRelay,
 	clntModList = append(clntModList, nclient4.WithHWAddr(ccfg.Mac))
 	clnt, err := nclient4.NewWithConn(rudpconn, ccfg.Mac, clntModList...)
 	if err != nil {
-		myLog("failed to create dhcpv4 client for %v,%v", ccfg.Mac, err)
+		common.MyLog("failed to create dhcpv4 client for %v,%v", ccfg.Mac, err)
 		return
 	}
 	dhcpModList := []dhcpv4.Modifier{}
@@ -670,7 +701,7 @@ func doDORA(ccfg clientConfig, relay *etherconn.RawSocketRelay,
 	result.StartTime = time.Now()
 	lease, err := clnt.Request(context.Background(), dhcpModList...)
 	if err != nil {
-		myLog("failed complete DORA for %v,%v", ccfg.Mac, err)
+		common.MyLog("failed complete DORA for %v,%v", ccfg.Mac, err)
 		return
 	}
 
@@ -818,18 +849,23 @@ func analyzeResults(results []*testResult, setup *testSetup) *resultSummary {
 	return summary
 }
 
+func createPktRelay(setup *testSetup) (*etherconn.RawSocketRelay, error) {
+	relay, err := etherconn.NewRawSocketRelay(context.Background(),
+		setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
+		etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create raw relay for if %v, %v", setup.Ifname, err)
+	}
+	return relay, nil
+}
+
 //DORA excute DHCPv4 DORA exchange according to setup
-func DORA(setup *testSetup) *resultSummary {
+func DORA(setup *testSetup, relay *etherconn.RawSocketRelay) *resultSummary {
 	ccfgList, err := genClientConfigurations(setup)
 	if err != nil {
 		log.Fatalf("failed to generate per client config,%v", err)
 	}
 	//doing DORA
-	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname, etherconn.WithBPFFilter(bpfFilter), etherconn.WithDebug(setup.Debug))
-	if err != nil {
-		log.Fatalf("failed to create raw socket for if %v", setup.Ifname)
-	}
-	defer relay.Stop()
 
 	savewg := new(sync.WaitGroup)
 	saveLeaseChan := make(chan *v4Lease, 16)
@@ -867,16 +903,16 @@ func actHelpStr() string {
 	return fmt.Sprintf("DHCP action,%v|%v", actDORA, actRelease)
 }
 
-var logger *log.Logger
+// var logger *log.Logger
 
-func myLog(format string, a ...interface{}) {
-	if logger == nil {
-		return
-	}
-	msg := fmt.Sprintf(format, a...)
-	_, fname, linenum, _ := runtime.Caller(1)
-	logger.Print(fmt.Sprintf("%v:%v:%v", filepath.Base(fname), linenum, msg))
-}
+// func common.MyLog(format string, a ...interface{}) {
+// 	if logger == nil {
+// 		return
+// 	}
+// 	msg := fmt.Sprintf(format, a...)
+// 	_, fname, linenum, _ := runtime.Caller(1)
+// 	logger.Print(fmt.Sprintf("%v:%v:%v", filepath.Base(fname), linenum, msg))
+// }
 
 const (
 	// bpfFilter = "(udp or (udp and vlan)) or (icmp6 or (icmp6 and vlan))"
@@ -913,7 +949,8 @@ func main() {
 	apply := flag.Bool("a", false, "apply the lease")
 	customoption := flag.String("customoption", "", "add a custom option, id:value")
 	ver := flag.Bool("v", false, "show version")
-	isV6 := flag.Bool("v6", false, "DHCPv6 client")
+	isV4 := flag.Bool("v4", true, "enable/disable DHCPv4 client")
+	isV6 := flag.Bool("v6", false, "enable/disable DHCPv6 client")
 	v6Mtype := flag.String("v6m", "auto", "v6 message type, auto|relay|solicit")
 	needNA := flag.Bool("iana", true, "request IANA")
 	needPD := flag.Bool("iapd", false, "request IAPD")
@@ -950,6 +987,7 @@ func main() {
 		*interval,
 		*debug,
 		*rid, *cid, *clientid, *vclass, *customoption,
+		*isV4,
 		*isV6,
 		*v6Mtype,
 		*needNA,
@@ -961,14 +999,23 @@ func main() {
 		log.Fatalf("invalid parameter,%v", err)
 	}
 	if setup.Debug {
-		logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
+		common.Logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
 	}
-
+	relay, err := createPktRelay(setup)
+	if err != nil {
+		log.Fatal(err)
+	}
 	switch *action {
 	case actDORA:
-		if !*isV6 {
-			summary := DORA(setup)
-			fmt.Println(summary)
+		if setup.EnableV4 {
+			v4summary := DORA(setup, relay)
+			fmt.Printf("DHCPv4 Results:")
+			fmt.Println(v4summary)
+		}
+		if setup.EnableV6 {
+			v6summary := DORAv6(setup, relay)
+			fmt.Printf("DHCPv6 Results:")
+			fmt.Println(v6summary)
 		}
 	case actRelease:
 		release(setup)

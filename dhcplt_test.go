@@ -4,6 +4,7 @@
 package main
 
 import (
+	"dhcplt/common"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -116,7 +117,7 @@ func dotest(c testCase) error {
 	defer cmd.Process.Kill()
 	time.Sleep(time.Second)
 	summary := DORA(c.setup)
-	myLog("%v", summary)
+	common.MyLog("%v", summary)
 	cmp := cmprule.NewDefaultCMPRule()
 	for _, rule := range c.ruleList {
 		err = cmp.ParseRule(rule)
@@ -140,12 +141,13 @@ func TestDHCPv6(t *testing.T) {
 		V6MsgType:    dhcpv6.MessageTypeRelayForward,
 		Ifname:       "C",
 		NumOfClients: 1,
-		StartMAC:     net.HardwareAddr{0xde, 0x8f, 0x5f, 0x3a, 0x4e, 0x66},
+		StartMAC:     net.HardwareAddr{0xde, 0x8f, 0x5f, 0x3a, 0x4e, 0x33},
 		EnableV6:     true,
 		NeedNA:       true,
 		NeedPD:       true,
 		Debug:        true,
 		RID:          "disk-@ID",
+		CID:          "MYCID-@ID",
 		StartVLANs: etherconn.VLANs{
 			&etherconn.VLAN{
 				ID:        300,
@@ -389,7 +391,7 @@ func TestDHCPLT(t *testing.T) {
 
 func TestMain(m *testing.M) {
 	log.SetFlags(log.Lshortfile | log.Ltime)
-	logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
+	common.Logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
 	result := m.Run()
 	os.Exit(result)
 }
