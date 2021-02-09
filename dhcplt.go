@@ -2,11 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
-	"flag"
-
 	"encoding/binary"
+	"encoding/gob"
+
+	// "encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -17,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	// "runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +86,121 @@ func (lease *v4Lease) Apply(ifname string, apply bool) error {
 	}
 	return netlink.AddrDel(link, addr)
 
+}
+
+type v6Lease struct {
+	MAC                       net.HardwareAddr
+	ReplyOptions              dhcpv6.Options
+	Type                      dhcpv6.MessageType //rely or solicit
+	VLANList                  etherconn.VLANs
+	IDOptions, RelayIDOptions dhcpv6.Options
+}
+
+type v6LeaseExport struct {
+	MAC                                 net.HardwareAddr
+	ReplyOptionsBytes                   []byte
+	Type                                dhcpv6.MessageType //rely or solicit
+	VLANList                            etherconn.VLANs
+	IDOptionsBytes, RelayIDOptionsBytes []byte
+}
+
+func (lease v6Lease) MarshalBinary() ([]byte, error) {
+	export := v6LeaseExport{
+		MAC:                 lease.MAC,
+		ReplyOptionsBytes:   lease.ReplyOptions.ToBytes(),
+		Type:                lease.Type,
+		VLANList:            lease.VLANList,
+		IDOptionsBytes:      lease.IDOptions.ToBytes(),
+		RelayIDOptionsBytes: lease.RelayIDOptions.ToBytes(),
+	}
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	err := enc.Encode(&export)
+	return buf.Bytes(), err
+}
+func (lease *v6Lease) UnmarshalBinary(b []byte) error {
+	var export v6LeaseExport
+	buf := bytes.NewBuffer(b)
+	dec := gob.NewDecoder(buf)
+	err := dec.Decode(&export)
+	if err != nil {
+		return err
+	}
+	lease.MAC = export.MAC
+	lease.Type = export.Type
+	lease.VLANList = export.VLANList
+
+	err = (&lease.ReplyOptions).FromBytes(export.ReplyOptionsBytes)
+	if err != nil {
+		return err
+	}
+	err = (&lease.IDOptions).FromBytes(export.IDOptionsBytes)
+	if err != nil {
+		return err
+	}
+	err = (&lease.RelayIDOptions).FromBytes(export.RelayIDOptionsBytes)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// addStr return all IANA and IAPD as following format:
+// NA: addr/128
+// PD: prefix/len
+func (lease *v6Lease) addrStr() (r []string) {
+	for _, na := range lease.ReplyOptions.Get(dhcpv6.OptionIANA) {
+		for _, addr := range na.(*dhcpv6.OptIANA).Options.Addresses() {
+			ipnet := net.IPNet{
+				IP:   addr.IPv6Addr,
+				Mask: net.CIDRMask(128, 128),
+			}
+			r = append(r, ipnet.String())
+		}
+	}
+	for _, pd := range lease.ReplyOptions.Get(dhcpv6.OptionIAPD) {
+		for _, prefix := range pd.(*dhcpv6.OptIAPD).Options.Prefixes() {
+			r = append(r, prefix.Prefix.String())
+		}
+	}
+	return
+}
+
+func (lease *v6Lease) GenRelease() (*dhcpv6.Message, error) {
+	msg, err := dhcpv6.NewMessage()
+	if err != nil {
+		return nil, err
+	}
+	msg.MessageType = dhcpv6.MessageTypeRelease
+	msg.AddOption(lease.ReplyOptions.GetOne(dhcpv6.OptionClientID))
+	msg.AddOption(lease.ReplyOptions.GetOne(dhcpv6.OptionServerID))
+	msg.AddOption(dhcpv6.OptElapsedTime(0))
+	for _, na := range lease.ReplyOptions.Get(dhcpv6.OptionIANA) {
+		msg.AddOption(na)
+	}
+	for _, pd := range lease.ReplyOptions.Get(dhcpv6.OptionIAPD) {
+		msg.AddOption(pd)
+	}
+	return msg, nil
+}
+
+func (lease *v6Lease) Apply(ifname string, apply bool) error {
+	link, err := netlink.LinkByName(ifname)
+	if err != nil {
+		return err
+	}
+	for _, addrstr := range lease.addrStr() {
+		addr, err := netlink.ParseAddr(addrstr)
+		if err != nil {
+			return err
+		}
+		if apply {
+			return netlink.AddrReplace(link, addr)
+		} else {
+			netlink.AddrDel(link, addr)
+		}
+	}
+	return nil
 }
 
 func getLeaseDir() string {
@@ -422,89 +541,199 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 func release(setup *testSetup) {
 	sdir := getLeaseDir()
 	fpath := filepath.Join(sdir, setup.Ifname)
-	var leaseList []*v4Lease
-	jsb, err := ioutil.ReadFile(fpath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = json.Unmarshal(jsb, &leaseList)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	relay, err := etherconn.NewRawSocketRelay(context.Background(), setup.Ifname,
-		etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
-	if err != nil {
-		log.Fatalf("failed to create raw socket for if %v", setup.Ifname)
-	}
-	defer relay.Stop()
-	realeaeFunc := func(l *v4Lease, wg *sync.WaitGroup) {
-		defer wg.Done()
-		econn := etherconn.NewEtherConn(l.Lease.ACK.ClientHWAddr,
-			relay, etherconn.WithVLANs(l.VLANList))
-		rudpconn, err := etherconn.NewRUDPConn(
-			myaddr.GenConnectionAddrStr("", l.Lease.ACK.YourIPAddr, 68), econn)
+	var v4LeaseList []*v4Lease
+	var v6LeaseList []*v6Lease
+	if setup.EnableV4 {
+		jsb, err := ioutil.ReadFile(fpath + ".v4")
 		if err != nil {
-			common.MyLog("failed to create raw udp conn for %v,%v", l.Lease.ACK.ClientHWAddr, err)
-			return
+			log.Fatal(err)
 		}
-		clntModList := []nclient4.ClientOpt{nclient4.WithHWAddr(l.Lease.ACK.ClientHWAddr)}
-		if setup.Debug {
-			clntModList = append(clntModList, nclient4.WithDebugLogger())
-		}
-		clnt, err := nclient4.NewWithConn(rudpconn, l.Lease.ACK.ClientHWAddr, clntModList...)
+		buf := bytes.NewBuffer(jsb)
+		dec := gob.NewDecoder(buf)
+		err = dec.Decode(&v4LeaseList)
+		// err = json.Unmarshal(jsb, &v4LeaseList)
 		if err != nil {
-			common.MyLog("failed to create dhcpv4 client for %v,%v", l.Lease.ACK.ClientHWAddr, err)
-			return
+			log.Fatal(err)
 		}
-		modList := []dhcpv4.Modifier{}
-		for t := range l.IDOptions {
-			modList = append(modList,
-				dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.GenericOptionCode(t),
-					l.IDOptions.Get(dhcpv4.GenericOptionCode(t)))))
+	}
+	if setup.EnableV6 {
+		jsb, err := ioutil.ReadFile(fpath + ".v6")
+		if err != nil {
+			log.Fatal(err)
 		}
-		for i := 0; i < 3; i++ {
-			err = clnt.Release(l.Lease, modList...)
+		log.Printf("read %d bytes lease", len(jsb))
+		buf := bytes.NewBuffer(jsb)
+		dec := gob.NewDecoder(buf)
+		err = dec.Decode(&v6LeaseList)
+		// err = json.Unmarshal(jsb, &v6LeaseList)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	if setup.EnableV4 {
+		realeaeFunc := func(l *v4Lease, wg *sync.WaitGroup) {
+			defer wg.Done()
+			econn := etherconn.NewEtherConn(l.Lease.ACK.ClientHWAddr,
+				setup.pktRelay, etherconn.WithVLANs(l.VLANList))
+			rudpconn, err := etherconn.NewRUDPConn(
+				myaddr.GenConnectionAddrStr("", l.Lease.ACK.YourIPAddr, 68), econn)
 			if err != nil {
-				common.MyLog("failed to send release for %v,%v", l.Lease.ACK.ClientHWAddr, err)
-				continue
+				common.MyLog("failed to create raw udp conn for %v,%v", l.Lease.ACK.ClientHWAddr, err)
+				return
+			}
+			clntModList := []nclient4.ClientOpt{nclient4.WithHWAddr(l.Lease.ACK.ClientHWAddr)}
+			if setup.Debug {
+				clntModList = append(clntModList, nclient4.WithDebugLogger())
+			}
+			clnt, err := nclient4.NewWithConn(rudpconn, l.Lease.ACK.ClientHWAddr, clntModList...)
+			if err != nil {
+				common.MyLog("failed to create dhcpv4 client for %v,%v", l.Lease.ACK.ClientHWAddr, err)
+				return
+			}
+			modList := []dhcpv4.Modifier{}
+			for t := range l.IDOptions {
+				modList = append(modList,
+					dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.GenericOptionCode(t),
+						l.IDOptions.Get(dhcpv4.GenericOptionCode(t)))))
+			}
+			for i := 0; i < 3; i++ {
+				err = clnt.Release(l.Lease, modList...)
+				if err != nil {
+					common.MyLog("failed to send release for %v,%v", l.Lease.ACK.ClientHWAddr, err)
+					continue
+				}
+			}
+
+		}
+		wg := new(sync.WaitGroup)
+		for _, l := range v4LeaseList {
+			//create etherconn & rudpconn
+			common.MyLog("releaseing mac %v", l.Lease.ACK.ClientHWAddr)
+			wg.Add(1)
+			go realeaeFunc(l, wg)
+			time.Sleep(setup.Interval)
+			if setup.ApplyLease {
+				common.MyLog("releasing %v...", l.addrStr())
+				err := l.Apply(setup.Ifname, false)
+				if err != nil {
+					common.MyLog("failed to release %v from if %v,%v", l.addrStr(), setup.Ifname, err)
+				}
 			}
 		}
-
+		wg.Wait()
+		log.Print("v4 done")
 	}
-	wg := new(sync.WaitGroup)
-	for _, l := range leaseList {
-		//create etherconn & rudpconn
-		common.MyLog("releaseing mac %v", l.Lease.ACK.ClientHWAddr)
-		wg.Add(1)
-		go realeaeFunc(l, wg)
-		time.Sleep(setup.Interval)
-		if setup.ApplyLease {
-			common.MyLog("releasing %v...", l.addrStr())
-			err = l.Apply(setup.Ifname, false)
+	if setup.EnableV6 {
+		realeaeFunc := func(l *v6Lease, wg *sync.WaitGroup) {
+			defer wg.Done()
+			v6econn := etherconn.NewEtherConn(l.MAC, setup.pktRelay,
+				etherconn.WithVLANs(l.VLANList),
+				etherconn.WithEtherTypes([]uint16{EthernetTypeIPv6}))
+			rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
+				myaddr.GetLLAFromMac(l.MAC),
+				dhcpv6.DefaultClientPort), v6econn, etherconn.WithAcceptAny(true))
 			if err != nil {
-				common.MyLog("failed to release %v from if %v,%v", l.addrStr(), setup.Ifname, err)
+				common.MyLog("failed to create raw udp conn for %v,%v", l.MAC, err)
+				return
+			}
+			mods := []nclient6.ClientOpt{}
+			if setup.Debug {
+				mods = []nclient6.ClientOpt{nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets()}
+			}
+			var clnt *nclient6.Client
+			switch l.Type {
+			case dhcpv6.MessageTypeSolicit:
+				clnt, err = nclient6.NewWithConn(rudpconn, l.MAC, mods...)
+				if err != nil {
+					common.MyLog("failed to create DHCPv6 client for %v, %v", l.MAC, err)
+					return
+				}
+			case dhcpv6.MessageTypeRelayForward:
+				accessConClnt, accessConRelay := conpair.NewPacketConnPair()
+				clnt, err = nclient6.NewWithConn(accessConClnt, l.MAC, mods...)
+				if err != nil {
+					common.MyLog("failed to create DHCPv6 client for %v, %v", l.MAC, err)
+					return
+				}
+				ctx, canc := context.WithCancel(context.Background())
+				defer canc()
+				dhcpv6relay.NewRelayAgent(ctx,
+					&dhcpv6relay.PairDHCPConn{PacketConnPair: accessConRelay},
+					&dhcpv6relay.RUDPDHCPConn{RUDPConn: rudpconn},
+					dhcpv6relay.WithLinkAddr(net.ParseIP("::")),
+					dhcpv6relay.WithPeerAddr(myaddr.GetLLAFromMac(l.MAC)),
+					dhcpv6relay.WithOptions(l.RelayIDOptions))
+			}
+
+			releaseMsg, err := l.GenRelease()
+			if err != nil {
+				common.MyLog("failed to create release msg,%v", err)
+				return
+			}
+			for i := 0; i < 3; i++ {
+				_, err = clnt.SendAndRead(context.Background(),
+					nclient6.AllDHCPRelayAgentsAndServers, releaseMsg,
+					nclient6.IsMessageType(dhcpv6.MessageTypeReply))
+				if err != nil {
+					common.MyLog("failed to send release msg,%v", err)
+					return
+				}
 			}
 		}
-	}
-	wg.Wait()
-	log.Print("done")
+		wg := new(sync.WaitGroup)
+		for _, l := range v6LeaseList {
+			common.MyLog("releaseing mac %v", l.MAC)
+			wg.Add(1)
+			go realeaeFunc(l, wg)
+			time.Sleep(setup.Interval)
+			if setup.ApplyLease {
+				common.MyLog("releasing %v...", l.addrStr())
+				err := l.Apply(setup.Ifname, false)
+				if err != nil {
+					common.MyLog("failed to release %v from if %v,%v", l.addrStr(), setup.Ifname, err)
+				}
+			}
+		}
+		wg.Wait()
+		log.Print("v6 done")
 
+	}
 }
 
-func saveLease(ch chan *v4Lease, ifname string, savewg *sync.WaitGroup) {
+func saveLease(ch chan interface{}, ifname string, savewg *sync.WaitGroup) {
 	defer savewg.Done()
 	sdir := getLeaseDir()
 	fpath := filepath.Join(sdir, ifname)
-	leaseList := []*v4Lease{}
+	leaseList := []interface{}{}
 	for l := range ch {
 		leaseList = append(leaseList, l)
 	}
-	rs, err := json.Marshal(leaseList)
+	var err error
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	var v6list []*v6Lease
+	var v4list []*v4Lease
+	for _, l := range leaseList {
+		switch l.(type) {
+		case *v6Lease:
+			v6list = append(v6list, l.(*v6Lease))
+		case *v4Lease:
+			v4list = append(v4list, l.(*v4Lease))
+		}
+	}
+	if len(v6list) > 0 {
+		err = enc.Encode(v6list)
+	} else {
+		err = enc.Encode(v4list)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = ioutil.WriteFile(fpath, rs, 0644)
+	// rs, err := json.Marshal(leaseList)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	err = ioutil.WriteFile(fpath, buf.Bytes(), 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -512,10 +741,12 @@ func saveLease(ch chan *v4Lease, ifname string, savewg *sync.WaitGroup) {
 }
 
 func DORAv6(setup *testSetup, ccfgList []clientConfig) *resultSummary {
-
-	//doing DORA
-
-	// defer relay.Stop()
+	savewg := new(sync.WaitGroup)
+	saveLeaseChan := make(chan interface{}, 16)
+	savewg.Add(1)
+	go saveLease(saveLeaseChan, setup.Ifname+".v6", savewg)
+	defer savewg.Wait()
+	defer close(saveLeaseChan)
 	//start NDPProxy
 	llaList := make(map[string]L2Encap)
 	for _, cfg := range ccfgList {
@@ -532,7 +763,7 @@ func DORAv6(setup *testSetup, ccfgList []clientConfig) *resultSummary {
 	testStart := time.Now()
 	for _, cfg := range ccfgList {
 		wg.Add(1)
-		go doDORAv6(cfg, wg, setup.Debug, resultCh)
+		go doDORAv6(cfg, wg, saveLeaseChan, setup.Debug, resultCh)
 		time.Sleep(setup.Interval)
 	}
 	wg.Wait()
@@ -587,7 +818,7 @@ func buildSolicit(ccfg clientConfig) (*dhcpv6.Message, error) {
 }
 
 func doDORAv6(ccfg clientConfig,
-	wg *sync.WaitGroup, debug bool,
+	wg *sync.WaitGroup, saveleasechan chan interface{}, debug bool,
 	collectchan chan *testResult) {
 	checkResp := func(msg *dhcpv6.Message) error {
 		if ccfg.setup.NeedNA {
@@ -627,6 +858,7 @@ func doDORAv6(ccfg clientConfig,
 	if debug {
 		mods = []nclient6.ClientOpt{nclient6.WithDebugLogger(), nclient6.WithLogDroppedPackets()}
 	}
+	var reply *dhcpv6.Message
 	switch ccfg.setup.V6MsgType {
 	case dhcpv6.MessageTypeSolicit:
 		clnt, err := nclient6.NewWithConn(rudpconn, ccfg.Mac, mods...)
@@ -652,7 +884,7 @@ func doDORAv6(ccfg clientConfig,
 			common.MyLog("failed to build request msg, %v", err)
 			return
 		}
-		reply, err := clnt.SendAndRead(context.Background(),
+		reply, err = clnt.SendAndRead(context.Background(),
 			nclient6.AllDHCPRelayAgentsAndServers,
 			request, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
 		if err != nil {
@@ -696,7 +928,7 @@ func doDORAv6(ccfg clientConfig,
 			common.MyLog("failed to build request msg, %v", err)
 			return
 		}
-		reply, err := clnt.SendAndRead(context.Background(),
+		reply, err = clnt.SendAndRead(context.Background(),
 			nclient6.AllDHCPRelayAgentsAndServers,
 			request, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
 		if err != nil {
@@ -713,12 +945,30 @@ func doDORAv6(ccfg clientConfig,
 		common.MyLog("un-supported DHCPv6 msg type %v", ccfg.setup.V6MsgType)
 		return
 	}
+	lease := &v6Lease{
+		MAC:            ccfg.Mac,
+		ReplyOptions:   reply.Options.Options,
+		Type:           ccfg.setup.V6MsgType,
+		VLANList:       ccfg.VLANs,
+		IDOptions:      ccfg.V6Options,
+		RelayIDOptions: ccfg.V6RelayOptions,
+	}
+	if ccfg.setup.ApplyLease {
+		err = lease.Apply(ccfg.setup.Ifname, true)
+		if err != nil {
+			common.MyLog("failed to apply lease, %v", err)
+			return
+		}
+	}
+	if ccfg.setup.SaveLease {
+		saveleasechan <- lease
+	}
 	result.FinishTime = time.Now()
 	result.ExecResult = resultSuccess
 }
 
 func doDORA(ccfg clientConfig,
-	wg *sync.WaitGroup, saveleasechan chan *v4Lease, debug bool,
+	wg *sync.WaitGroup, saveleasechan chan interface{}, debug bool,
 	collectchan chan *testResult) {
 	defer wg.Done()
 	result := new(testResult)
@@ -921,9 +1171,9 @@ func DORA(setup *testSetup, ccfgList []clientConfig) *resultSummary {
 	//doing DORA
 
 	savewg := new(sync.WaitGroup)
-	saveLeaseChan := make(chan *v4Lease, 16)
+	saveLeaseChan := make(chan interface{}, 16)
 	savewg.Add(1)
-	go saveLease(saveLeaseChan, setup.Ifname, savewg)
+	go saveLease(saveLeaseChan, setup.Ifname+".v4", savewg)
 	defer savewg.Wait()
 	defer close(saveLeaseChan)
 	wg := new(sync.WaitGroup)
@@ -979,8 +1229,11 @@ const (
 var VERSION string
 
 func main() {
+
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	gob.Register(v6Lease{})
+	// gob.Register(v6LeaseExport{})
 	intf := flag.String("i", "", "interface name")
 	debug := flag.Bool("d", false, "enable debug output")
 	mac := flag.String("mac", "", "mac address")
