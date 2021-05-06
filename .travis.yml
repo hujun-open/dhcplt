@@ -8,6 +8,7 @@ go:
 
 before_install:
   - sudo apt-get -y install kea-dhcp4-server
+  - sudo apt-get -y install kea-dhcp6-server
   - go get -t -v ./...
   
 
