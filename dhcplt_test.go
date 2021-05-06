@@ -4,7 +4,6 @@
 package main
 
 import (
-	"dhcplt/common"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -16,6 +15,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/hujun-open/dhcplt/common"
 
 	"github.com/hujun-open/cmprule"
 	"github.com/hujun-open/etherconn"

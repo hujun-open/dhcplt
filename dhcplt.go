@@ -26,9 +26,9 @@ import (
 	"sync"
 	"time"
 
-	"dhcplt/common"
-	"dhcplt/conpair"
-	"dhcplt/dhcpv6relay"
+	"github.com/hujun-open/dhcplt/common"
+	"github.com/hujun-open/dhcplt/conpair"
+	"github.com/hujun-open/dhcplt/dhcpv6relay"
 
 	"github.com/hujun-open/etherconn"
 	"github.com/hujun-open/myaddr"

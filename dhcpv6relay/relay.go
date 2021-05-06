@@ -3,11 +3,12 @@ package dhcpv6relay
 
 import (
 	"context"
-	"dhcplt/common"
 	"net"
 	"time"
 
-	"dhcplt/conpair"
+	"github.com/hujun-open/dhcplt/common"
+
+	"github.com/hujun-open/dhcplt/conpair"
 
 	"github.com/hujun-open/etherconn"
 	"github.com/insomniacslk/dhcp/dhcpv6"
