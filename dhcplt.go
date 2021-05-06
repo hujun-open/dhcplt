@@ -1396,7 +1396,6 @@ func NewRequestFromAdv(adv *dhcpv6.Message, modifiers ...dhcpv6.Modifier) (*dhcp
 		dhcpv6.OptionDomainSearchList,
 	))
 	// add OPTION_VENDOR_CLASS, only if present in the original request
-	// TODO implement OptionVendorClass
 	vClass := adv.GetOneOption(dhcpv6.OptionVendorClass)
 	if vClass != nil {
 		req.AddOption(vClass)

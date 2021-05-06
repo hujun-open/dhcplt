@@ -1,16 +1,26 @@
 # dhcplt
 [![Build Status](https://travis-ci.org/hujun-open/dhcplt.svg?branch=master)](https://travis-ci.org/hujun-open/dhcplt)
 
-dhcplt is a DHCPv4 load tester for Linux with following features:
+dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 
 - Using any source mac address and VLAN tags for DHCP packets without provisioning them in OS, this is achieved via using [etherconn](https://github.com/hujun-open/etherconn)
-- Support DORA and Release
-- Following DHCP options could be included in request:
-    - Client Id
-    - Vendor Class
-    - Option82 Circuit-Id
-    - Option82 Remote-Id
-    - Custom option
+- DHCPv4
+
+      - Support DORA and Release
+      - Following DHCPv4 options could be included in request:
+            - Client Id
+            - Vendor Class
+            - Option82 Circuit-Id
+            - Option82 Remote-Id
+            - Custom option
+- DHCPv6:
+
+      - Request for IA_NA and/or IA_PD prefix
+      - Send request in relay-forward message to simulate a relayed message, and handle the relay-reply message
+      - following DHCPv6 options could be included in request:
+            - BBF circuit-id/remote-id (only in relay message)
+            - client id 
+
 
 ## Performance
 dhcplt completed 1889 DORA per second on following setup:
@@ -21,7 +31,7 @@ To compare, perdhcp completed 1439 DORA per second with the same setup
 ## Usage Example
 **Note: using dhcplt requires root privilege**
 
-1. 10000 clients doing DORA on interface eth1, no VLAN, starting MAC address is the eth1 interface mac, increase by 1 for each client
+1. 10000 DHCPv4 clients doing DORA on interface eth1, no VLAN, starting MAC address is the eth1 interface mac, increase by 1 for each client
 ```
 dhcplt -i eth1 -n 10000
 ```
@@ -51,6 +61,21 @@ dhcplt -i eth1 -n 10000 -vlan 100 -svlan 200 -clntid "Client-@ID"
 dhcplt -i eth1 -action release
 ```
 
+8. example 1 version for DHCPv6
+```
+dhcplt -i eth1 -n 10000 -v4=false -v6=true
+```
+
+9. example 8 variant, request both IA_NA and IA_PD
+```
+dhcplt -i eth1 -n 10000 -v4=false -v6=true -iapd=true -iana=true
+```
+
+10. example 8 variant, simulating relay
+```
+dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6m=relay
+```
+
 ## DORA Result Summary
 With action DORA, dhcplt will display a summary of results after it s done like following:
 ```
@@ -76,10 +101,11 @@ Avg success time:4.350656333s
 
 ```
 Usage of ./dhcplt:
+  -a    apply the lease
   -action string
-        DHCP action (default "dora")
+        DHCP action,dora|release (default "dora")
   -cid string
-        option82 circuit-id
+        circuit-id
   -clntid string
         Client Identifier
   -customoption string
@@ -89,8 +115,12 @@ Usage of ./dhcplt:
         excluded vlan IDs
   -i string
         interface name
+  -iana
+        request IANA (default true)
+  -iapd
+        request IAPD
   -interval duration
-        interval between DORA (default 1ms)
+        interval between launching client (default 1ms)
   -mac string
         mac address
   -macstep uint
@@ -99,9 +129,9 @@ Usage of ./dhcplt:
         number of clients (default 1)
   -p    enable profiling, only for dev use
   -retry uint
-        number of retry (default 3)
+        number of DHCP request retry (default 3)
   -rid string
-        option82 remote-id
+        remote-id
   -savelease
         save leases
   -svlan int
@@ -109,8 +139,14 @@ Usage of ./dhcplt:
   -svlanetype uint
         svlan tag EtherType (default 33024)
   -timeout duration
-        timeout (default 5s)
+        DHCP request timeout (default 5s)
   -v    show version
+  -v4
+        enable/disable DHCPv4 client (default true)
+  -v6
+        enable/disable DHCPv6 client
+  -v6m string
+        v6 message type, auto|relay|solicit (default "auto")
   -vc string
         vendor class
   -vlan int
@@ -119,6 +155,7 @@ Usage of ./dhcplt:
         vlan tag EtherType (default 33024)
   -vlanstep uint
         VLAN Id step
+
 ```
 - interval: this is wait interval between launch client DORA
 - all duration type could use syntax that can be parsed by GOlang flag.Duration, like "1s", "1ms"
@@ -127,3 +164,8 @@ Usage of ./dhcplt:
 - customoption: format is "<option-id>:<value>" for example "60:dhcplt" means include an Option 60 with value as "dhcplt"
 - savelease: save leases to `/tmp/dhcplt_leases/<ifname>`
 - -action release: release previous saved lease, other parameter beside "-i" andn "-d" will be ignored;
+- -a: add the assigned address to the interface
+- -v6m: setting the DHCPv6 message type:
+      - solicit
+      - relay
+      - auto: if rid or cid is specified, then it is relay; otherwise solict

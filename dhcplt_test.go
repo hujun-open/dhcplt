@@ -1,5 +1,5 @@
 // dhcplt_test
-// This test require kea-dhcp4 server, and root priviliage
+// This test require kea-dhcpv4, kea-dhcpv6 server, and root priviliage
 
 package main
 
