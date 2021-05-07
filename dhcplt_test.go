@@ -119,7 +119,7 @@ func dotestv6(c testCase) error {
 		return err
 	}
 	cmd := exec.Command("kea-dhcp6", "-d", "-c", conf.Name())
-	logfile, err := os.Create("/tmp/k6.log")
+	logfile, err := ioutil.TempFile("", "k6.log")
 	if err != nil {
 		return err
 	}
