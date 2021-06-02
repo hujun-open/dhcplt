@@ -19,11 +19,11 @@ type L2Encap struct {
 
 type NDPProxy struct {
 	targets map[string]L2Encap //key is stringify IP
-	relay   *etherconn.RawSocketRelay
+	relay   etherconn.PacketRelay
 	econn   *etherconn.EtherConn
 }
 
-func NewNDPProxyFromRelay(targets map[string]L2Encap, relay *etherconn.RawSocketRelay) *NDPProxy {
+func NewNDPProxyFromRelay(targets map[string]L2Encap, relay etherconn.PacketRelay) *NDPProxy {
 	r := new(NDPProxy)
 	r.relay = relay
 	r.targets = targets

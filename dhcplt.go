@@ -239,7 +239,8 @@ type testSetup struct {
 	V6MsgType dhcpv6.MessageType
 	NeedNA    bool
 	NeedPD    bool
-	pktRelay  *etherconn.RawSocketRelay
+	pktRelay  etherconn.PacketRelay
+	ENG       string
 }
 
 func (setup *testSetup) excluded(vids []uint16) bool {
@@ -291,8 +292,16 @@ func newSetupviaFlags(
 	isv4, isv6 bool, v6mtype string, needNA, needPD bool,
 	SaveLease bool,
 	ApplyLease bool,
+	eng string,
 ) (*testSetup, error) {
 	var r testSetup
+	r.ENG = eng
+	switch r.ENG {
+	case ENG_AFPKT:
+	case ENG_XDP:
+	default:
+		return nil, fmt.Errorf("unknown engine %v", r.ENG)
+	}
 	if Ifname == "" {
 		return nil, fmt.Errorf("interface name can't be empty")
 	}
@@ -1156,14 +1165,25 @@ func analyzeResults(results []*testResult, setup *testSetup) *resultSummary {
 	return summary
 }
 
-func createPktRelay(setup *testSetup) (*etherconn.RawSocketRelay, error) {
-	relay, err := etherconn.NewRawSocketRelay(context.Background(),
-		setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
-		etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create raw relay for if %v, %v", setup.Ifname, err)
+func createPktRelay(setup *testSetup) (etherconn.PacketRelay, error) {
+	switch setup.ENG {
+	case ENG_AFPKT:
+		relay, err := etherconn.NewRawSocketRelay(context.Background(),
+			setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
+			etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create afpkt relay for if %v, %v", setup.Ifname, err)
+		}
+		return relay, nil
+	case ENG_XDP:
+		relay, err := etherconn.NewXDPRelay(context.Background(),
+			setup.Ifname, etherconn.WithXDPDebug(setup.Debug), etherconn.WithXDPDefaultReceival(true))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create xdp relay for if %v, %v", setup.Ifname, err)
+		}
+		return relay, nil
 	}
-	return relay, nil
+	return nil, fmt.Errorf("unknown eng type %v", setup.ENG)
 }
 
 //DORA excute DHCPv4 DORA exchange according to setup
@@ -1224,6 +1244,8 @@ const (
 	//bpfFilter = "(ip6 or (ip6 and vlan)) or (ip or (ip and vlan))"
 	// bpfFilter = "ip or ip6"
 	bpfFilter = ""
+	ENG_AFPKT = "afpkt"
+	ENG_XDP   = "xdp"
 )
 
 var VERSION string
@@ -1263,6 +1285,7 @@ func main() {
 	v6Mtype := flag.String("v6m", "auto", "v6 message type, auto|relay|solicit")
 	needNA := flag.Bool("iana", true, "request IANA")
 	needPD := flag.Bool("iapd", false, "request IAPD")
+	engine := flag.String("eng", ENG_AFPKT, fmt.Sprintf("packet forward engine, %v|%v", ENG_AFPKT, ENG_XDP))
 	flag.Parse()
 	if *ver {
 		if VERSION == "" {
@@ -1307,6 +1330,7 @@ func main() {
 		*needPD,
 		*save,
 		*apply,
+		*engine,
 	)
 	if err != nil {
 		log.Fatalf("invalid parameter,%v", err)
