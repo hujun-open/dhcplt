@@ -132,6 +132,7 @@ func dotestv6(c testCase) error {
 	defer cmd.Process.Release()
 	defer cmd.Process.Kill()
 	time.Sleep(time.Second)
+	c.setup.ENG = ENG_XDP
 	c.setup.pktRelay, err = createPktRelay(c.setup)
 	if err != nil {
 		return err
@@ -190,6 +191,7 @@ func dotest(c testCase) error {
 	}
 	defer cmd.Process.Release()
 	defer cmd.Process.Kill()
+	c.setup.ENG = ENG_AFPKT
 	c.setup.pktRelay, err = createPktRelay(c.setup)
 	if err != nil {
 		return err

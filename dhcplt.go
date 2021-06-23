@@ -383,7 +383,6 @@ func newSetupviaFlags(
 	r.RID = rid
 	r.CID = cid
 	r.ClntID = clntid
-
 	if vclass != "" {
 		r.V4Options = append(r.V4Options, dhcpv4.OptClassIdentifier(vclass))
 		r.V6Options.Add(&dhcpv6.OptVendorClass{
@@ -498,6 +497,10 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 		ccfg.V4Options = []dhcpv4.Option{}
 		for _, o := range setup.V4Options {
 			ccfg.V4Options = append(ccfg.V4Options, o)
+		}
+		ccfg.V6Options = []dhcpv6.Option{}
+		for _, o := range setup.V6Options {
+			ccfg.V6Options = append(ccfg.V6Options, o)
 		}
 		genStrFunc := func(s string, id int) string {
 			const varname = "@ID"
@@ -986,7 +989,7 @@ func doDORA(ccfg clientConfig,
 		result.L2EP = etherconn.NewL2EndpointFromMACVLAN(ccfg.Mac, ccfg.VLANs).GetKey()
 		collectchan <- result
 	}()
-
+	defer ccfg.v4econn.Close()
 	common.MyLog("doing DORA for %v with VLANs %v, on if %v", ccfg.Mac, ccfg.VLANs.String(), ccfg.setup.Ifname)
 	result.StartTime = time.Now()
 	//create etherconn & rudpconn
@@ -1170,14 +1173,21 @@ func createPktRelay(setup *testSetup) (etherconn.PacketRelay, error) {
 	case ENG_AFPKT:
 		relay, err := etherconn.NewRawSocketRelay(context.Background(),
 			setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
-			etherconn.WithDebug(setup.Debug), etherconn.WithDefaultReceival(true))
+			etherconn.WithDebug(setup.Debug),
+			etherconn.WithDefaultReceival(true),
+			etherconn.WithSendChanDepth(10240),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create afpkt relay for if %v, %v", setup.Ifname, err)
 		}
 		return relay, nil
 	case ENG_XDP:
 		relay, err := etherconn.NewXDPRelay(context.Background(),
-			setup.Ifname, etherconn.WithXDPDebug(setup.Debug), etherconn.WithXDPDefaultReceival(true))
+			setup.Ifname, etherconn.WithXDPDebug(setup.Debug),
+			etherconn.WithXDPDefaultReceival(false),
+			etherconn.WithXDPSendChanDepth(10240),
+			etherconn.WithXDPUMEMNumOfTrunk(65536),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create xdp relay for if %v, %v", setup.Ifname, err)
 		}
@@ -1342,6 +1352,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to generate per client config,%v", err)
 	}
+	defer fmt.Printf("relay stats:\n%+v", setup.pktRelay.GetStats())
 	overallWG := new(sync.WaitGroup)
 	var v4summary, v6summary *resultSummary
 	switch *action {
@@ -1372,6 +1383,11 @@ func main() {
 		fmt.Println(v6summary)
 		fmt.Printf("DHCPv4 Results:")
 		fmt.Println(v4summary)
+		if *profiling {
+			ch := make(chan bool)
+			<-ch
+		}
+
 	}
 
 }
