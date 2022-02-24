@@ -1174,7 +1174,7 @@ func createPktRelay(setup *testSetup) (etherconn.PacketRelay, error) {
 		relay, err := etherconn.NewRawSocketRelay(context.Background(),
 			setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
 			etherconn.WithDebug(setup.Debug),
-			etherconn.WithDefaultReceival(true),
+			etherconn.WithDefaultReceival(false),
 			etherconn.WithSendChanDepth(10240),
 		)
 		if err != nil {

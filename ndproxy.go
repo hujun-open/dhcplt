@@ -43,7 +43,7 @@ func (proxy *NDPProxy) processReq(pbuf []byte, peermac net.HardwareAddr) {
 				TargetAddress: req.TargetAddress,
 				Flags:         0b01000000,
 				Options: []layers.ICMPv6Option{
-					layers.ICMPv6Option{
+					{
 						Type: layers.ICMPv6OptTargetAddress,
 						Data: []byte(l2ep.HwAddr),
 					},

@@ -259,7 +259,7 @@ func TestDHCPv6(t *testing.T) {
 	// }
 	// DORAv6(setup, ccfgs)
 	testList := []testCase{
-		testCase{
+		{
 			desc: "single vlan, both PD and NA",
 			setup: &testSetup{
 				EnableV4:     false,
@@ -339,7 +339,7 @@ func TestDHCPv6(t *testing.T) {
 			},
 		},
 		///////////////////
-		testCase{
+		{
 			desc: "double vlan, both PD and NA",
 			setup: &testSetup{
 				EnableV4:     false,
@@ -427,7 +427,7 @@ func TestDHCPv6(t *testing.T) {
 			},
 		},
 		////////////////////
-		testCase{
+		{
 			desc: "single vlan, PD only",
 			setup: &testSetup{
 				EnableV4:     false,
@@ -507,7 +507,7 @@ func TestDHCPv6(t *testing.T) {
 			},
 		},
 		////////////////////////
-		testCase{
+		{
 			desc: "double vlan, NA only",
 			setup: &testSetup{
 				EnableV4:     false,
@@ -595,7 +595,7 @@ func TestDHCPv6(t *testing.T) {
 			},
 		},
 		////////////////////
-		testCase{
+		{
 			desc: "double vlan, both PD and NA, relayed",
 			setup: &testSetup{
 				EnableV4:     false,
@@ -707,7 +707,7 @@ func TestDHCPv6(t *testing.T) {
 
 func TestDHCPLT(t *testing.T) {
 	testList := []testCase{
-		testCase{
+		{
 			setup: &testSetup{
 				Debug:        true,
 				Ifname:       "C",
@@ -774,7 +774,7 @@ func TestDHCPLT(t *testing.T) {
 		},
 
 		//two vlans
-		testCase{
+		{
 			setup: &testSetup{
 				Ifname:       "C",
 				Debug:        true,
@@ -848,7 +848,7 @@ func TestDHCPLT(t *testing.T) {
 		},
 
 		//negative case, wrong vlans
-		testCase{
+		{
 			setup: &testSetup{
 				Ifname:       "C",
 				NumOfClients: 10,
