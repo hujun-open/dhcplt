@@ -55,7 +55,19 @@ func createVethLink(a, b string) error {
 	if err != nil {
 		return err
 	}
-	return netlink.LinkSetUp(linkb)
+	err = netlink.LinkSetUp(linkb)
+	if err != nil {
+		return err
+	}
+	err = etherconn.SetIfVLANOffloading(a, false)
+	if err != nil {
+		return err
+	}
+	err = etherconn.SetIfVLANOffloading(b, false)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func createVLANIF(parentif string, vlans etherconn.VLANs) (netlink.Link, error) {
@@ -93,7 +105,7 @@ type testCase struct {
 	shouldFail bool
 }
 
-func dotestv6(c testCase) error {
+func dotestv6(c testCase, eng string) error {
 	var err error
 	err = createVethLink("S", "C")
 	if err != nil {
@@ -132,7 +144,7 @@ func dotestv6(c testCase) error {
 	defer cmd.Process.Release()
 	defer cmd.Process.Kill()
 	time.Sleep(time.Second)
-	c.setup.ENG = ENG_XDP
+	c.setup.ENG = eng
 	c.setup.pktRelay, err = createPktRelay(c.setup)
 	if err != nil {
 		return err
@@ -145,6 +157,7 @@ func dotestv6(c testCase) error {
 
 	summary := DORAv6(c.setup, ccfgs)
 	common.MyLog("%v", summary)
+	defer fmt.Println(c.setup.pktRelay.GetStats())
 	cmp := cmprule.NewDefaultCMPRule()
 	for _, rule := range c.ruleList {
 		err = cmp.ParseRule(rule)
@@ -259,6 +272,8 @@ func TestDHCPv6(t *testing.T) {
 	// }
 	// DORAv6(setup, ccfgs)
 	testList := []testCase{
+
+		//case 0
 		{
 			desc: "single vlan, both PD and NA",
 			setup: &testSetup{
@@ -267,7 +282,7 @@ func TestDHCPv6(t *testing.T) {
 				NeedNA:       true,
 				NeedPD:       true,
 				V6MsgType:    dhcpv6.MessageTypeSolicit,
-				Debug:        false,
+				Debug:        true,
 				Ifname:       "C",
 				NumOfClients: 10,
 				StartMAC:     net.HardwareAddr{0xaa, 0xbb, 0xcc, 11, 22, 33},
@@ -335,10 +350,10 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 3s",
 			},
 		},
-		///////////////////
+		/////////////////// case1
 		{
 			desc: "double vlan, both PD and NA",
 			setup: &testSetup{
@@ -423,10 +438,10 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 3s",
 			},
 		},
-		////////////////////
+		////////////////////case2
 		{
 			desc: "single vlan, PD only",
 			setup: &testSetup{
@@ -503,10 +518,10 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 3s",
 			},
 		},
-		////////////////////////
+		////////////////////////case3
 		{
 			desc: "double vlan, NA only",
 			setup: &testSetup{
@@ -591,10 +606,10 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 3s",
 			},
 		},
-		////////////////////
+		////////////////////cas4
 		{
 			desc: "double vlan, both PD and NA, relayed",
 			setup: &testSetup{
@@ -680,7 +695,7 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 3s",
 			},
 		},
 		////////////////////
@@ -688,8 +703,21 @@ func TestDHCPv6(t *testing.T) {
 	}
 	for i, c := range testList {
 		time.Sleep(6 * time.Second)
-		t.Logf("testing case %d %v", i, c.desc)
-		err := dotestv6(c)
+		t.Logf("testing case %d %v with rawrelay", i, c.desc)
+		err := dotestv6(c, ENG_AFPKT)
+		if err != nil {
+			if c.shouldFail {
+				fmt.Printf("case %d failed as expected,%v\n", i, err)
+			} else {
+				t.Fatalf("case %d failed,%v", i, err)
+			}
+		} else {
+			if c.shouldFail {
+				t.Fatalf("case %d succeed but should fail", i)
+			}
+		}
+		t.Logf("testing case %d %v with xdprelay", i, c.desc)
+		err = dotestv6(c, ENG_XDP)
 		if err != nil {
 			if c.shouldFail {
 				fmt.Printf("case %d failed as expected,%v\n", i, err)

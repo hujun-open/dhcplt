@@ -6,7 +6,7 @@ require (
 	github.com/cilium/ebpf v0.8.1 // indirect
 	github.com/google/gopacket v1.1.19
 	github.com/hujun-open/cmprule v0.3.0
-	github.com/hujun-open/etherconn v0.4.0
+	github.com/hujun-open/etherconn v0.4.1
 	github.com/hujun-open/myaddr v0.1.1
 	github.com/insomniacslk/dhcp v0.0.0-20210428091707-95b2ff6905c9
 	github.com/safchain/ethtool v0.1.0 // indirect
