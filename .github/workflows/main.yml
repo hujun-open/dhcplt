@@ -31,6 +31,8 @@ jobs:
         with:
           go-version: 1.17
 
+      - name: download dep
+        run: go mod tidy
       # Runs a set of commands using the runners shell
       - name: Build
         run: go build -v ./...
