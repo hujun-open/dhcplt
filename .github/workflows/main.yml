@@ -31,7 +31,7 @@ jobs:
         with:
           go-version: 1.17
       - name: install dep
-        run: apt-get -y install libpcap-dev
+        run: sudo apt-get -y install libpcap-dev
       - name: download go dep
         run: go mod tidy
       # Runs a set of commands using the runners shell
