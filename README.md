@@ -1,5 +1,5 @@
 # dhcplt
-[![Build Status](https://travis-ci.org/hujun-open/dhcplt.svg?branch=master)](https://travis-ci.org/hujun-open/dhcplt)
+![Build Status](https://github.com/hujun-open/dhcplt/actions/workflows/main.yml/badge.svg)
 
 dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 
