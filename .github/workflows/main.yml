@@ -37,4 +37,4 @@ jobs:
 
 
       - name: Test
-        run: sudo -E env "PATH=$PATH" go test -v
+        run: sudo -E env "PATH=$PATH" go test -failfast -p 1 -v
