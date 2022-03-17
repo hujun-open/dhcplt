@@ -1,6 +1,6 @@
 // dhcplt_test
-// This test require kea-dhcpv4, kea-dhcpv6 server, and root priviliage
-
+// To run this test in UB20.04, install kea-dhcp4-server, kea-dhcp6-server and libpcap-dev
+// run with root privilage
 package main
 
 import (

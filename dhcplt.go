@@ -1187,6 +1187,7 @@ func createPktRelay(setup *testSetup) (etherconn.PacketRelay, error) {
 			etherconn.WithXDPDefaultReceival(false),
 			etherconn.WithXDPSendChanDepth(10240),
 			etherconn.WithXDPUMEMNumOfTrunk(65536),
+			etherconn.WithXDPEtherTypes([]uint16{EthernetTypeIPv4, EthernetTypeIPv6}),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create xdp relay for if %v, %v", setup.Ifname, err)
