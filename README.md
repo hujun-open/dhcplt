@@ -4,6 +4,7 @@
 dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 
 - Using any source mac address and VLAN tags for DHCP packets without provisioning them in OS, this is achieved via using [etherconn](https://github.com/hujun-open/etherconn)
+
 - DHCPv4
 
       - Support DORA and Release
@@ -22,6 +23,7 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
             - client id 
 
 - Flapping: dhcplt support flapping, which repeatly establish and release DHCP leases. 
+- performant: test shows that it could do 4k DORA per sec on a single core VM
 
 ## Usage Example
 **Note: using dhcplt requires root privilege**
@@ -69,27 +71,30 @@ dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6m=relay
 11. example 1 variant, 5000 clients flapping
 ```
 dhcplt -i eth1 -n 10000 -flap 5000 
-``
+```
+
 ## DORA Result Summary
 With action DORA, dhcplt will display a summary of results after it s done like following:
 ```
 Result Summary
-total: 10000
-Success:10000
-Failed:0
-Duration:7.065089682s
-Interval:0s
-Setup rate:1415.4102000258233
-Fastest success:793.139638ms
-Success within a second:207
-Slowest success:6.045893163s
-Avg success time:4.350656333s
+total trans: 500
+Success dial:500
+Success release:0
+Failed trans:0
+Duration:815.173804ms
+Interval:1ms
+Setup rate:613.3661282373594
+Fastest dial success:69.320291ms
+dial Success within a second:500
+Slowest dial success:173.38359ms
+Avg dial success time:135.940204ms
 ```
-- Total/Success/Failed are the number of clients, success means number of clients successfully completed DORA;
+- Total trans: number of DHCPv4 or DHCPv6 transatctions, one DORA or one release is counted as one transaction.
+- Success dial/release: number of success DORA or release transactions.
 - Duration: between launch 1st client and stop of last client
 - Interval: launch interval, specified by "-interval"
-- Setup rate: the number of success client / number of section between launch of 1st client and completion of last success client
-- Fastest success/Success within a second/slowest success/Avg success time: these are amount time of a client complete DORA, e.g fast success means amount of time fast client took to complete DORA
+- Setup rate: the number of success DORA / duration in second
+- Fastest/Slowest dial success/Success within a second/slowest success/Avg dial success time: these are amount time of a client complete DORA, e.g fastest dial success means least amount of time a client took to complete DORA
 
 ## Command Line Parameters
 
