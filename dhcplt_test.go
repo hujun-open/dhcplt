@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -106,6 +108,7 @@ type testCase struct {
 }
 
 func dotestv6(c testCase, eng string) error {
+	fmt.Printf("initiate test case %+v\n", c)
 	var err error
 	err = createVethLink("S", "C")
 	if err != nil {
@@ -149,13 +152,16 @@ func dotestv6(c testCase, eng string) error {
 	if err != nil {
 		return err
 	}
-	defer c.setup.pktRelay.Stop()
-	ccfgs, err := genClientConfigurations(c.setup)
+	sch, err := NewSched(c.setup)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create sched, %v", err)
 	}
-
-	summary := DORAv6(c.setup, ccfgs)
+	ctx, cancelf := context.WithTimeout(context.Background(), testCaseTimeout)
+	defer cancelf()
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	sch.run(ctx, wg)
+	summary := sch.summary
 	common.MyLog("%v", summary)
 	defer fmt.Println(c.setup.pktRelay.GetStats())
 	cmp := cmprule.NewDefaultCMPRule()
@@ -175,7 +181,13 @@ func dotestv6(c testCase, eng string) error {
 	return nil
 }
 
+const (
+	testCaseTimeout = 3 * time.Minute
+)
+
 func dotest(c testCase) error {
+	fmt.Printf("initiate test case %+v\n", c)
+	c.setup.EnableV4 = true
 	err := createVethLink("S", "C")
 	if err != nil {
 		return err
@@ -204,21 +216,34 @@ func dotest(c testCase) error {
 	}
 	defer cmd.Process.Release()
 	defer cmd.Process.Kill()
+	// c.setup.ENG = ENG_AFPKT
+	// c.setup.pktRelay, err = createPktRelay(c.setup)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer c.setup.pktRelay.Stop()
+	// ccfgs, err := genClientConfigurations(c.setup)
+	// if err != nil {
+	// 	return err
+	// }
+	// // common.MyLog("start dora in 30s")
+	// time.Sleep(time.Second)
+	// // common.MyLog("test starts")
 	c.setup.ENG = ENG_AFPKT
 	c.setup.pktRelay, err = createPktRelay(c.setup)
 	if err != nil {
 		return err
 	}
-	defer c.setup.pktRelay.Stop()
-	ccfgs, err := genClientConfigurations(c.setup)
+	sch, err := NewSched(c.setup)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create sched, %v", err)
 	}
-	// common.MyLog("start dora in 30s")
-	time.Sleep(time.Second)
-	// common.MyLog("test starts")
-
-	summary := DORA(c.setup, ccfgs)
+	ctx, cancelf := context.WithTimeout(context.Background(), testCaseTimeout)
+	defer cancelf()
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	sch.run(ctx, wg)
+	summary := sch.summary
 	common.MyLog("%v", summary)
 	cmp := cmprule.NewDefaultCMPRule()
 	for _, rule := range c.ruleList {
@@ -287,7 +312,7 @@ func TestDHCPv6(t *testing.T) {
 				NumOfClients: 10,
 				StartMAC:     net.HardwareAddr{0xaa, 0xbb, 0xcc, 11, 22, 33},
 				MacStep:      1,
-				Timeout:      3 * time.Second,
+				Timeout:      10 * time.Second,
 				Retry:        2,
 
 				StartVLANs: etherconn.VLANs{
@@ -350,7 +375,7 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 3s",
+				"TotalTime : < : 10s",
 			},
 		},
 		/////////////////// case1
@@ -735,7 +760,7 @@ func TestDHCPv6(t *testing.T) {
 
 func TestDHCPLT(t *testing.T) {
 	testList := []testCase{
-		{
+		{ //case 0
 			setup: &testSetup{
 				Debug:        true,
 				Ifname:       "C",
@@ -797,12 +822,12 @@ func TestDHCPLT(t *testing.T) {
 			svipstr: "192.0.2.254/24",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 10s",
 			},
 		},
 
 		//two vlans
-		{
+		{ //case 1
 			setup: &testSetup{
 				Ifname:       "C",
 				Debug:        true,
@@ -871,12 +896,12 @@ func TestDHCPLT(t *testing.T) {
 			svipstr: "192.0.2.254/24",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 10s",
 			},
 		},
 
 		//negative case, wrong vlans
-		{
+		{ // case 2
 			setup: &testSetup{
 				Ifname:       "C",
 				NumOfClients: 10,
@@ -944,12 +969,15 @@ func TestDHCPLT(t *testing.T) {
 			svipstr: "192.0.2.254/24",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 1s",
+				"TotalTime : < : 10s",
 			},
 			shouldFail: true,
 		},
 	}
 	for i, c := range testList {
+		// if i != 2 {
+		// 	continue
+		// }
 		time.Sleep(6 * time.Second)
 		t.Logf("testing case %d", i)
 		err := dotest(c)

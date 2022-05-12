@@ -21,12 +21,7 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
             - BBF circuit-id/remote-id (only in relay message)
             - client id 
 
-
-## Performance
-dhcplt completed 1889 DORA per second on following setup:
- - two linux VMs on a laptop with Intel Core i7-7600U, one for dhcplt, one for kea-dhcpv4 (1.6.0) server 
-
-To compare, perdhcp completed 1439 DORA per second with the same setup
+- Flapping: dhcplt support flapping, which repeatly establish and release DHCP leases. 
 
 ## Usage Example
 **Note: using dhcplt requires root privilege**
@@ -56,11 +51,6 @@ dhcplt -i eth1 -n 10000 -vlan 100 -svlan 200 -interval 0s
 dhcplt -i eth1 -n 10000 -vlan 100 -svlan 200 -clntid "Client-@ID"
 ```
 
-7. release pervious saved leases for eth1
-```
-dhcplt -i eth1 -action release
-```
-
 8. example 1 version for DHCPv6
 ```
 dhcplt -i eth1 -n 10000 -v4=false -v6=true
@@ -76,6 +66,10 @@ dhcplt -i eth1 -n 10000 -v4=false -v6=true -iapd=true -iana=true
 dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6m=relay
 ```
 
+11. example 1 variant, 5000 clients flapping
+```
+dhcplt -i eth1 -n 10000 -flap 5000 
+``
 ## DORA Result Summary
 With action DORA, dhcplt will display a summary of results after it s done like following:
 ```
@@ -101,9 +95,6 @@ Avg success time:4.350656333s
 
 ```
 Usage of ./dhcplt:
-  -a    apply the lease
-  -action string
-        DHCP action,dora|release (default "dora")
   -cid string
         circuit-id
   -clntid string
@@ -111,8 +102,14 @@ Usage of ./dhcplt:
   -customoption string
         add a custom option, id:value
   -d    enable debug output
+  -eng string
+        packet forward engine, afpkt|xdp (default "afpkt")
   -excludedvlans string
         excluded vlan IDs
+  -flap int
+        number of client flapping (default -1)
+  -flapstaydown duration
+        duration of flapping client stay down before reconnect (default 10s)
   -i string
         interface name
   -iana
@@ -125,6 +122,10 @@ Usage of ./dhcplt:
         mac address
   -macstep uint
         mac address step (default 1)
+  -maxflapint duration
+        max flapping interval (default 30s)
+  -minflapint duration
+        minimal flapping interval (default 5s)
   -n uint
         number of clients (default 1)
   -p    enable profiling, only for dev use
@@ -162,10 +163,10 @@ Usage of ./dhcplt:
 - default value for vlanstep is 0
 - vlanetype/svlanetype are EtherType for the tag as uint16 number
 - customoption: format is "<option-id>:<value>" for example "60:dhcplt" means include an Option 60 with value as "dhcplt"
-- savelease: save leases to `/tmp/dhcplt_leases/<ifname>`
-- -action release: release previous saved lease, other parameter beside "-i" andn "-d" will be ignored;
-- -a: add the assigned address to the interface
 - -v6m: setting the DHCPv6 message type:
       - solicit
       - relay
       - auto: if rid or cid is specified, then it is relay; otherwise solict
+- flap: the number of clients flapping
+- maxflapint, minflapint: the duration a flapping client stay connected, it is random value between min and max
+- flapstaydown: the duration a flapping client stay disconnected. 
