@@ -156,7 +156,7 @@ var VERSION string
 
 func handleCtrlC(c chan os.Signal, cf context.CancelFunc) {
 	<-c
-	fmt.Println("\n\rstopping...\n")
+	fmt.Println("\n\rstopping...")
 	cf()
 }
 
