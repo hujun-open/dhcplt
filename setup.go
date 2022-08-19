@@ -38,13 +38,14 @@ type testSetup struct {
 	ClntID   string
 	EnableV4 bool
 	//v6 specific
-	EnableV6  bool
-	V6MsgType dhcpv6.MessageType
-	NeedNA    bool
-	NeedPD    bool
-	pktRelay  etherconn.PacketRelay
-	ENG       string
-	Flapping  *flappingConf
+	EnableV6    bool
+	V6MsgType   dhcpv6.MessageType
+	NeedNA      bool
+	NeedPD      bool
+	pktRelay    etherconn.PacketRelay
+	ENG         string
+	Flapping    *flappingConf
+	SendRSFirst bool
 }
 
 func (setup *testSetup) excluded(vids []uint16) bool {
@@ -74,7 +75,7 @@ func newSetupviaFlags(
 	Interval time.Duration,
 	Debug bool,
 	rid, cid, clntid, vclass, customop string,
-	isv4, isv6 bool, v6mtype string, needNA, needPD bool,
+	isv4, isv6 bool, v6mtype string, needNA, needPD bool, sendRS bool,
 	SaveLease bool,
 	ApplyLease bool,
 	eng string,
@@ -115,6 +116,7 @@ func newSetupviaFlags(
 	r.MacStep = MacStep
 	r.Retry = retry
 	r.Timeout = timeout
+	r.SendRSFirst = sendRS
 	chkVIDFunc := func(vid int) bool {
 		if vid < 0 || vid > 4095 {
 			return false

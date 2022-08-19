@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/hujun-open/dhcplt/common"
 	"github.com/hujun-open/dhcplt/conpair"
 	"github.com/hujun-open/dhcplt/dhcpv6relay"
@@ -98,7 +101,64 @@ func (dc *DClient) dialAll(wg *sync.WaitGroup) {
 	}
 }
 
+func (dc *DClient) sendRS() error {
+	req := &layers.ICMPv6RouterSolicitation{
+		Options: []layers.ICMPv6Option{
+			{
+				Type: layers.ICMPv6OptSourceAddress,
+				Data: []byte(dc.cfg.Mac),
+			},
+		},
+	}
+	reqLayer := &layers.ICMPv6{
+		TypeCode: layers.CreateICMPv6TypeCode(133, 0),
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	iplayer := &layers.IPv6{
+		Version:    6,
+		SrcIP:      myaddr.GetLLAFromMac(dc.cfg.Mac),
+		DstIP:      net.ParseIP("ff02::2"),
+		NextHeader: layers.IPProtocol(58),
+		HopLimit:   255, //must be 255, otherwise won't be acceptedz
+	}
+	reqLayer.SetNetworkLayerForChecksum(iplayer)
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	gopacket.SerializeLayers(buf, opts,
+		iplayer,
+		reqLayer,
+		req)
+
+	_, err := dc.cfg.v6econn.WriteIPPktToFrom(buf.Bytes(), dc.cfg.Mac, etherconn.BroadCastMAC, dc.cfg.VLANs)
+	if err != nil {
+		return fmt.Errorf("failed to send RS, %w", err)
+	}
+	common.MyLog("client %v sending RS", dc.id)
+	var recvbuf []byte
+	for i := 0; i < 3; i++ {
+		dc.cfg.v6econn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		recvbuf, _, err = dc.cfg.v6econn.ReadPkt()
+		if err != nil {
+			if !errors.Is(err, etherconn.ErrTimeOut) {
+				return fmt.Errorf("failed to get RA, %w", err)
+			}
+		} else {
+			gpkt := gopacket.NewPacket(recvbuf, layers.LayerTypeIPv6, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
+			if raLayer := gpkt.Layer(layers.LayerTypeICMPv6RouterAdvertisement); raLayer != nil {
+				if raLayer.(*layers.ICMPv6RouterAdvertisement).Flags&0b10000000 != 0 {
+					common.MyLog("client %v got RA with M bit set", dc.id)
+					return nil
+				}
+				return fmt.Errorf("got RA but M bit is not set")
+			}
+
+		}
+	}
+	return fmt.Errorf("failed to get RA")
+}
+
 func (dc *DClient) dialv6() error {
+
 	if dc.d6 == nil {
 		return fmt.Errorf("dhcpv6 is not configured")
 	}
@@ -360,6 +420,13 @@ func NewSched(setup *testSetup) (*Sched, error) {
 		}
 
 		if dc.cfg.v6econn != nil {
+			if dc.cfg.setup.SendRSFirst {
+				err := dc.sendRS()
+				if err != nil {
+					return nil, fmt.Errorf("client %v %v failed to get RA,%w", dc.id, dc.cfg.Mac, err)
+				}
+			}
+
 			key = dc.cfg.v6econn.LocalAddr().GetKey()
 			rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
 				myaddr.GetLLAFromMac(dc.cfg.Mac),

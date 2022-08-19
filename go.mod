@@ -12,6 +12,8 @@ require (
 	github.com/vishvananda/netlink v1.1.0
 )
 
+//replace github.com/hujun-open/etherconn => ../etherconn
+
 require (
 	github.com/asavie/xdp v0.3.4-0.20211113171712-711132ccc429 // indirect
 	github.com/cilium/ebpf v0.8.1 // indirect

@@ -189,6 +189,7 @@ func main() {
 	isV4 := flag.Bool("v4", true, "enable/disable DHCPv4 client")
 	isV6 := flag.Bool("v6", false, "enable/disable DHCPv6 client")
 	v6Mtype := flag.String("v6m", "auto", "v6 message type, auto|relay|solicit")
+	sendRS := flag.Bool("sendrs", false, "send RS and expect RA before dhcpv6")
 	needNA := flag.Bool("iana", true, "request IANA")
 	needPD := flag.Bool("iapd", false, "request IAPD")
 	engine := flag.String("eng", ENG_AFPKT, fmt.Sprintf("packet forward engine, %v|%v", ENG_AFPKT, ENG_XDP))
@@ -238,6 +239,7 @@ func main() {
 		*v6Mtype,
 		*needNA,
 		*needPD,
+		*sendRS,
 		*save,
 		false,
 		*engine,
@@ -265,5 +267,9 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go handleCtrlC(c, cancelf)
 	wg.Wait()
+	if *profiling {
+		ch := make(chan bool)
+		<-ch
+	}
 	fmt.Println("done.")
 }
