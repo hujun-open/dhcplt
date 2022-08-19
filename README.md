@@ -21,6 +21,7 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
       - following DHCPv6 options could be included in request:
             - BBF circuit-id/remote-id (only in relay message)
             - client id 
+      - option of sending Router Solicit and expect Router Advertisement with M bit, before starting DHCPv6 
 
 - Flapping: dhcplt support flapping, which repeatly establish and release DHCP leases. 
 - performant: test shows that it could do 4k DORA per sec on a single core VM
@@ -63,12 +64,17 @@ dhcplt -i eth1 -n 10000 -v4=false -v6=true
 dhcplt -i eth1 -n 10000 -v4=false -v6=true -iapd=true -iana=true
 ```
 
-10. example 8 variant, simulating relay
+10. example 9 variant, sending RS first
+```
+dhcplt -i eth1 -n 10000 -v4=false -v6=true -iapd=true -iana=true -sendrs
+```
+
+11. example 8 variant, simulating relay
 ```
 dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6m=relay
 ```
 
-11. example 1 variant, 5000 clients flapping
+12. example 1 variant, 5000 clients flapping
 ```
 dhcplt -i eth1 -n 10000 -flap 5000 
 ```
@@ -99,6 +105,7 @@ Avg dial success time:135.940204ms
 ## Command Line Parameters
 
 ```
+flag provided but not defined: -?
 Usage of ./dhcplt:
   -cid string
         circuit-id
@@ -140,6 +147,8 @@ Usage of ./dhcplt:
         remote-id
   -savelease
         save leases
+  -sendrs
+        send RS and expect RA before dhcpv6
   -svlan int
         svlan tag (default -1)
   -svlanetype uint
@@ -161,7 +170,6 @@ Usage of ./dhcplt:
         vlan tag EtherType (default 33024)
   -vlanstep uint
         VLAN Id step
-
 ```
 - interval: this is wait interval between launch client DORA
 - all duration type could use syntax that can be parsed by GOlang flag.Duration, like "1s", "1ms"
