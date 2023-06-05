@@ -81,7 +81,7 @@ func (proxy *NDPProxy) recv() {
 		if err != nil {
 			log.Fatalf("failed from recv, %v", err)
 		}
-		go proxy.processReq(pkt, remote)
+		go proxy.processReq(pkt, remote.HwAddr)
 	}
 
 }

@@ -263,7 +263,7 @@ func main() {
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
 	go sch.run(ctx, wg)
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go handleCtrlC(c, cancelf)
 	wg.Wait()

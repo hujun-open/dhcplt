@@ -15,50 +15,6 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv6"
 )
 
-type testSetup struct {
-	Ifname         string
-	NumOfClients   uint
-	StartMAC       net.HardwareAddr
-	MacStep        uint
-	StartVLANs     etherconn.VLANs
-	VLANStep       uint
-	ExcludedVLANs  []uint16
-	Interval       time.Duration
-	V4Options      []dhcpv4.Option
-	V6Options      dhcpv6.Options //non-relay specific options
-	V6RelayOptions dhcpv6.Options // relay specific options
-	Debug          bool
-	SaveLease      bool
-	ApplyLease     bool
-	Retry          uint
-	Timeout        time.Duration
-	//following are template str, $ID will be replaced by client id
-	RID      string
-	CID      string
-	ClntID   string
-	EnableV4 bool
-	//v6 specific
-	EnableV6    bool
-	V6MsgType   dhcpv6.MessageType
-	NeedNA      bool
-	NeedPD      bool
-	pktRelay    etherconn.PacketRelay
-	ENG         string
-	Flapping    *flappingConf
-	SendRSFirst bool
-}
-
-func (setup *testSetup) excluded(vids []uint16) bool {
-	for _, vid := range vids {
-		for _, extv := range setup.ExcludedVLANs {
-			if extv == vid {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func newSetupviaFlags(
 	Ifname string,
 	NumOfClients uint,
@@ -328,8 +284,7 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 			common.MyLog("gened clnt id is %v", genStrFunc(setup.ClntID, i))
 			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptClientIdentifier([]byte(genStrFunc(setup.ClntID, i))))
 			ccfg.V6Options.Add(dhcpv6.OptClientID(
-				dhcpv6.Duid{
-					Type:                 dhcpv6.DUID_EN,
+				&dhcpv6.DUIDEN{
 					EnterpriseNumber:     BBFEnterpriseNumber,
 					EnterpriseIdentifier: []byte(genStrFunc(setup.ClntID, i)),
 				}))

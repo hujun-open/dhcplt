@@ -649,9 +649,8 @@ func buildSolicit(ccfg clientConfig) (*dhcpv6.Message, error) {
 	if ccfg.setup.NeedPD {
 		optModList = append(optModList, dhcpv6.WithIAPD(getIAIDviaInt(1)))
 	}
-	duid := dhcpv6.Duid{
-		Type:          dhcpv6.DUID_LL,
-		HwType:        iana.HWTypeEthernet,
+	duid := &dhcpv6.DUIDLLT{
+		HWType:        iana.HWTypeEthernet,
 		Time:          dhcpv6.GetTime(),
 		LinkLayerAddr: ccfg.Mac,
 	}
