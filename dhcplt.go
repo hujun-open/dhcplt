@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	// "encoding/json"
-	"flag"
+
 	"fmt"
 	"log"
 	"net/http"
@@ -17,15 +17,14 @@ import (
 	"runtime"
 
 	// "runtime/debug"
-	"strconv"
-	"strings"
+
 	"time"
 
 	"github.com/hujun-open/dhcplt/common"
+	"github.com/hujun-open/shouchan"
 
 	mv "github.com/RobinUS2/golang-moving-average"
 	"github.com/hujun-open/etherconn"
-	"github.com/insomniacslk/dhcp/dhcpv4"
 )
 
 const (
@@ -33,25 +32,6 @@ const (
 	EthernetTypeIPv4    uint16 = 0x0800
 	EthernetTypeIPv6    uint16 = 0x86DD
 )
-
-func parseCustomOptionStr(coptStr string) (dhcpv4.Option, error) {
-	strList := strings.SplitN(coptStr, ":", 2)
-	if len(strList) < 2 {
-		return dhcpv4.Option{}, fmt.Errorf("invalid custom option %v", coptStr)
-	}
-	var oid int
-	var err error
-	if oid, err = strconv.Atoi(strList[0]); err != nil {
-		return dhcpv4.Option{}, fmt.Errorf("%v is not a number", strList[0])
-	}
-	return dhcpv4.Option{
-		Code: dhcpv4.GenericOptionCode(oid),
-		Value: dhcpv4.OptionGeneric{
-			Data: []byte(strList[1]),
-		},
-	}, nil
-
-}
 
 type execResult int
 
@@ -113,7 +93,7 @@ func (rs resultSummary) String() string {
 const maxDuration = time.Duration(int64(^uint64(0) >> 1))
 
 func createPktRelay(setup *testSetup) (etherconn.PacketRelay, error) {
-	switch setup.ENG {
+	switch setup.Driver {
 	case ENG_AFPKT:
 		relay, err := etherconn.NewRawSocketRelay(context.Background(),
 			setup.Ifname, etherconn.WithBPFFilter(bpfFilter),
@@ -138,7 +118,7 @@ func createPktRelay(setup *testSetup) (etherconn.PacketRelay, error) {
 		}
 		return relay, nil
 	}
-	return nil, fmt.Errorf("unknown eng type %v", setup.ENG)
+	return nil, fmt.Errorf("unknown eng type %v", setup.Driver)
 }
 
 const (
@@ -148,8 +128,8 @@ const (
 	//bpfFilter = "(ip6 or (ip6 and vlan)) or (ip or (ip and vlan))"
 	// bpfFilter = "ip or ip6"
 	bpfFilter = ""
-	ENG_AFPKT = "afpkt"
-	ENG_XDP   = "xdp"
+	ENG_AFPKT = etherconn.RelayTypeAFP
+	ENG_XDP   = etherconn.RelayTypeXDP
 )
 
 var VERSION string
@@ -164,93 +144,24 @@ func main() {
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	intf := flag.String("i", "", "interface name")
-	debug := flag.Bool("d", false, "enable debug output")
-	mac := flag.String("mac", "", "mac address")
-	clntnum := flag.Uint("n", 1, "number of clients")
-	macstep := flag.Uint("macstep", 1, "mac address step")
-	vlanstep := flag.Uint("vlanstep", 0, "VLAN Id step")
-	excludevlanid := flag.String("excludedvlans", "", "excluded vlan IDs")
-	cid := flag.String("cid", "", "circuit-id")
-	rid := flag.String("rid", "", "remote-id")
-	clientid := flag.String("clntid", "", "Client Identifier")
-	vclass := flag.String("vc", "", "vendor class")
-	retry := flag.Uint("retry", 3, "number of DHCP request retry")
-	timeout := flag.Duration("timeout", 5*time.Second, "DHCP request timeout")
-	interval := flag.Duration("interval", time.Millisecond, "interval between launching client")
-	vlanid := flag.Int("vlan", -1, "vlan tag")
-	vlantype := flag.Uint("vlanetype", 0x8100, "vlan tag EtherType")
-	svlanid := flag.Int("svlan", -1, "svlan tag")
-	svlantype := flag.Uint("svlanetype", 0x8100, "svlan tag EtherType")
-	profiling := flag.Bool("p", false, "enable profiling, only for dev use")
-	save := flag.Bool("savelease", false, "save leases")
-	customoption := flag.String("customoption", "", "add a custom option, id:value")
-	ver := flag.Bool("v", false, "show version")
-	isV4 := flag.Bool("v4", true, "enable/disable DHCPv4 client")
-	isV6 := flag.Bool("v6", false, "enable/disable DHCPv6 client")
-	v6Mtype := flag.String("v6m", "auto", "v6 message type, auto|relay|solicit")
-	sendRS := flag.Bool("sendrs", false, "send RS and expect RA before dhcpv6")
-	needNA := flag.Bool("iana", true, "request IANA")
-	needPD := flag.Bool("iapd", false, "request IAPD")
-	engine := flag.String("eng", ENG_AFPKT, fmt.Sprintf("packet forward engine, %v|%v", ENG_AFPKT, ENG_XDP))
-	flapNum := flag.Int("flap", -1, "number of client flapping")
-	minFlapInterval := flag.Duration("minflapint", defaultMinFlapInt, "minimal flapping interval")
-	maxFlapInterval := flag.Duration("maxflapint", defualtMaxFlapInt, "max flapping interval")
-	flapStaydown := flag.Duration("flapstaydown", defaultFlapStayDown, "duration of flapping client stay down before reconnect")
-	flag.Parse()
-	if *ver {
-		if VERSION == "" {
-			VERSION = "non-release build"
-		}
-		fmt.Printf("dhcplt, a DHCP load tester, %v, by Hu Jun\n", VERSION)
-		return
+	cnf, err := shouchan.NewSConfCMDLine(newDefaultConf(), "")
+	if err != nil {
+		panic(err)
 	}
-	if *profiling {
+	cnf.ReadwithCMDLine()
+	setup := cnf.GetConf()
+	err = setup.init()
+	if err != nil {
+		log.Fatalf("invalid setup, %v", err)
+	}
+	if setup.Profiling {
 		runtime.SetBlockProfileRate(1000000000)
 		go func() {
 			log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
 		}()
 
 	}
-	if !*isV4 && !*isV6 {
-		fmt.Println("both DHCPv4 and DHCPv6 are disabled, nothing to do, quit.")
-		return
-	}
-	var err error
 
-	setup, err := newSetupviaFlags(
-		*intf,
-		*clntnum,
-		*retry,
-		*timeout,
-		*mac,
-		*macstep,
-		*vlanid,
-		*vlantype,
-		*svlanid,
-		*svlantype,
-		*vlanstep,
-		*excludevlanid,
-		*interval,
-		*debug,
-		*rid, *cid, *clientid, *vclass, *customoption,
-		*isV4,
-		*isV6,
-		*v6Mtype,
-		*needNA,
-		*needPD,
-		*sendRS,
-		*save,
-		false,
-		*engine,
-		*flapNum,
-		*minFlapInterval,
-		*maxFlapInterval,
-		*flapStaydown,
-	)
-	if err != nil {
-		log.Fatalf("invalid parameter,%v", err)
-	}
 	if setup.Debug {
 		common.Logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
 	}
@@ -267,7 +178,7 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go handleCtrlC(c, cancelf)
 	wg.Wait()
-	if *profiling {
+	if setup.Profiling {
 		ch := make(chan bool)
 		<-ch
 	}

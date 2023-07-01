@@ -1,7 +1,7 @@
 # dhcplt
 ![Build Status](https://github.com/hujun-open/dhcplt/actions/workflows/main.yml/badge.svg)
 
-dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
+dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features: 
 
 - Using any source mac address and VLAN tags for DHCP packets without provisioning them in OS, this is achieved via using [etherconn](https://github.com/hujun-open/etherconn)
 

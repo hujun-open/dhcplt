@@ -87,18 +87,56 @@ func (dc *DClient) dialAll(wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
 	}
-	if dc.d4 != nil {
-		err = dc.dialv4()
-		if err != nil {
-			common.MyLog("failed to dial DHCPv4, %v", err)
+	subwg := new(sync.WaitGroup)
+
+	if dc.cfg.setup.StackDelay >= 0 {
+		//do v4 first
+		if dc.d4 != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.dialv4(subwg)
+				if err != nil {
+					common.MyLog("failed to dial DHCPv4, %v", err)
+				}
+			}()
 		}
-	}
-	if dc.d6 != nil {
-		err = dc.dialv6()
-		if err != nil {
-			common.MyLog("failed to dial DHCPv6, %v", err)
+		time.Sleep(dc.cfg.setup.StackDelay)
+		if dc.d6 != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.dialv6(subwg)
+				if err != nil {
+					common.MyLog("failed to dial DHCPv6, %v", err)
+				}
+			}()
 		}
+	} else {
+		//do v6 first
+		if dc.d6 != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.dialv6(subwg)
+				if err != nil {
+					common.MyLog("failed to dial DHCPv6, %v", err)
+				}
+			}()
+		}
+		time.Sleep(-1 * dc.cfg.setup.StackDelay)
+		if dc.d4 != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.dialv4(subwg)
+				if err != nil {
+					common.MyLog("failed to dial DHCPv4, %v", err)
+				}
+			}()
+		}
+
 	}
+	if dc.d4 != nil || dc.d6 != nil {
+		subwg.Wait()
+	}
+
 }
 
 func (dc *DClient) sendRS() error {
@@ -157,8 +195,8 @@ func (dc *DClient) sendRS() error {
 	return fmt.Errorf("failed to get RA")
 }
 
-func (dc *DClient) dialv6() error {
-
+func (dc *DClient) dialv6(wg *sync.WaitGroup) error {
+	defer wg.Done()
 	if dc.d6 == nil {
 		return fmt.Errorf("dhcpv6 is not configured")
 	}
@@ -268,7 +306,8 @@ func (dc *DClient) dialv6() error {
 
 }
 
-func (dc *DClient) dialv4() error {
+func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
+	defer wg.Done()
 	if dc.d4 == nil {
 		return fmt.Errorf("dhcpv4 is not configured")
 	}
@@ -552,7 +591,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 	time.Sleep(time.Second)
 	fmt.Printf("\ninitial dialing resutls are:\n%v", sch.summary)
 	if sch.setup.Flapping != nil {
-		if sch.setup.Flapping.flapNum > 0 {
+		if sch.setup.Flapping.FlapNum > 0 {
 			for _, cc := range sch.ClntList {
 				if cc.d4ReleaseClnt == nil && cc.d4Lease != nil {
 					err = cc.createV4ReleaseClnt()
@@ -569,8 +608,8 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 					}
 				}
 			}
-			fmt.Printf("\nstart flapping %d clients...\n", sch.setup.Flapping.flapNum)
-			intervalRange := sch.setup.Flapping.maxInterval - sch.setup.Flapping.minInterval
+			fmt.Printf("\nstart flapping %d clients...\n", sch.setup.Flapping.FlapNum)
+			intervalRange := sch.setup.Flapping.MaxInterval - sch.setup.Flapping.MinInterval
 			flapFunc := func(ctx context.Context, dc *DClient, wg *sync.WaitGroup) {
 				defer wg.Done()
 				for {
@@ -579,7 +618,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 						return
 					default:
 					}
-					time.Sleep(sch.setup.Flapping.minInterval + time.Duration(rand.Int63n(int64(intervalRange))))
+					time.Sleep(sch.setup.Flapping.MinInterval + time.Duration(rand.Int63n(int64(intervalRange))))
 					select {
 					case <-ctx.Done():
 						return
@@ -607,7 +646,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 						return
 					default:
 					}
-					time.Sleep(sch.setup.Flapping.stayDownDur)
+					time.Sleep(sch.setup.Flapping.StayDownDur)
 					select {
 					case <-ctx.Done():
 						return
@@ -619,7 +658,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 			i := 0
 			wg = new(sync.WaitGroup)
 			for _, dc := range sch.ClntList {
-				if i < sch.setup.Flapping.flapNum {
+				if i < sch.setup.Flapping.FlapNum {
 					wg.Add(1)
 					go flapFunc(ctx, dc, wg)
 				}

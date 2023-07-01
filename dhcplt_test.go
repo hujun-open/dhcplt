@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -107,7 +106,7 @@ type testCase struct {
 	shouldFail bool
 }
 
-func dotestv6(c testCase, eng string) error {
+func dotestv6(c testCase, eng etherconn.RelayType) error {
 	fmt.Printf("initiate test case %+v\n", c)
 	var err error
 	err = createVethLink("S", "C")
@@ -125,7 +124,7 @@ func dotestv6(c testCase, eng string) error {
 	//NOTE: here need to wait for some time so that interface becomes oper-up
 	time.Sleep(3 * time.Second)
 	os.Remove("/var/lib/kea/dhcp6.leases")
-	conf, err := ioutil.TempFile("", "keav6conf*")
+	conf, err := os.CreateTemp("", "keav6conf*")
 	if err != nil {
 		return err
 	}
@@ -134,7 +133,7 @@ func dotestv6(c testCase, eng string) error {
 		return err
 	}
 	cmd := exec.Command("kea-dhcp6", "-d", "-c", conf.Name())
-	logfile, err := ioutil.TempFile("", "k6.log")
+	logfile, err := os.CreateTemp("", "k6.log")
 	if err != nil {
 		return err
 	}
@@ -147,7 +146,7 @@ func dotestv6(c testCase, eng string) error {
 	defer cmd.Process.Release()
 	defer cmd.Process.Kill()
 	time.Sleep(time.Second)
-	c.setup.ENG = eng
+	c.setup.Driver = eng
 	c.setup.pktRelay, err = createPktRelay(c.setup)
 	if err != nil {
 		return err
@@ -200,7 +199,7 @@ func dotest(c testCase) error {
 	if err != nil {
 		return err
 	}
-	conf, err := ioutil.TempFile("", "keaconf*")
+	conf, err := os.CreateTemp("", "keaconf*")
 	if err != nil {
 		return err
 	}
@@ -229,7 +228,7 @@ func dotest(c testCase) error {
 	// // common.MyLog("start dora in 30s")
 	// time.Sleep(time.Second)
 	// // common.MyLog("test starts")
-	c.setup.ENG = ENG_AFPKT
+	c.setup.Driver = ENG_AFPKT
 	c.setup.pktRelay, err = createPktRelay(c.setup)
 	if err != nil {
 		return err
