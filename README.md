@@ -105,81 +105,74 @@ Avg dial success time:135.940204ms
 ## Command Line Parameters
 
 ```
-flag provided but not defined: -?
-Usage of ./dhcplt:
-  -cid string
-        circuit-id
-  -clntid string
-        Client Identifier
-  -customoption string
-        add a custom option, id:value
-  -d    enable debug output
-  -eng string
-        packet forward engine, afpkt|xdp (default "afpkt")
-  -excludedvlans string
-        excluded vlan IDs
-  -flap int
-        number of client flapping (default -1)
-  -flapstaydown duration
-        duration of flapping client stay down before reconnect (default 10s)
-  -i string
-        interface name
-  -iana
-        request IANA (default true)
-  -iapd
-        request IAPD
-  -interval duration
-        interval between launching client (default 1ms)
-  -mac string
-        mac address
-  -macstep uint
-        mac address step (default 1)
-  -maxflapint duration
-        max flapping interval (default 30s)
-  -minflapint duration
-        minimal flapping interval (default 5s)
-  -n uint
-        number of clients (default 1)
-  -p    enable profiling, only for dev use
-  -retry uint
-        number of DHCP request retry (default 3)
-  -rid string
-        remote-id
-  -savelease
-        save leases
-  -sendrs
-        send RS and expect RA before dhcpv6
-  -svlan int
-        svlan tag (default -1)
-  -svlanetype uint
-        svlan tag EtherType (default 33024)
-  -timeout duration
-        DHCP request timeout (default 5s)
-  -v    show version
-  -v4
-        enable/disable DHCPv4 client (default true)
-  -v6
-        enable/disable DHCPv6 client
-  -v6m string
-        v6 message type, auto|relay|solicit (default "auto")
-  -vc string
-        vendor class
-  -vlan int
-        vlan tag (default -1)
-  -vlanetype uint
-        vlan tag EtherType (default 33024)
-  -vlanstep uint
-        VLAN Id step
+Usage:
+  -f <filepath> : read from config file <filepath>
+  -applylease <struct> : apply assigned address on the interface if true
+        default:false
+  -cid <struct> : BBF circuit-id
+  -clntid <struct> : client-id
+  -customv4option <struct> : custom DHCPv4 option, code:value format
+  -customv6option <struct> : custom DHCPv6 option, code:value format
+  -d <struct> : enable debug output
+        default:false
+  -driver <struct> : etherconn forward engine
+        default:afpkt
+  -excludedvlans <struct> : a list of excluded VLAN IDs
+  -flapmaxinterval <struct> : minimal flapping interval
+        default:5s
+  -flapmininterval <struct> : max flapping interval
+        default:30s
+  -flapnum <struct> : number of client flapping
+        default:0
+  -flapstaydowndur <struct> : duriation of stay down
+        default:10s
+  -i <struct> : interface name
+  -interval <struct> : interval between setup of sessions
+        default:1s
+  -mac <struct> : starting MAC address
+  -macstep <struct> : amount of increase between two consecutive MAC address
+        default:1
+  -n <struct> : number of clients
+        default:1
+  -needna <struct> : request DHCPv6 IANA if true
+        default:false
+  -needpd <struct> : request DHCPv6 IAPD if true
+        default:false
+  -profiling <struct> : enable profiling, dev use only
+        default:false
+  -retry <struct> : number of setup retry
+        default:1
+  -rid <struct> : BBF remote-id
+  -savelease <struct> : save the lease if true
+        default:false
+  -sendrsfirst <struct> : send Router Solict first if true
+        default:false
+  -stackdelay <struct> : delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first
+        default:0s
+  -timeout <struct> : setup timout
+        default:5s
+  -v4 <struct> : do DHCPv4 if true
+        default:true
+  -v6 <struct> : do DHCPv6 if true
+        default:false
+  -v6msgtype <struct> : DHCPv6 exchange type, solict|relay|auto
+        default:auto
+  -vendorclass <struct> : vendor class
+  -vlan <struct> : starting VLAN ID, Dot1Q or QinQ
+  -vlanetype <struct> : EthernetType for the vlan tag
+        default:33024
+  -vlanstep <struct> : amount of increase between two consecutive VLAN ID
+        default:1
+
 ```
 - interval: this is wait interval between launch client DORA
 - all duration type could use syntax that can be parsed by GOlang flag.Duration, like "1s", "1ms"
-- default value for vlanstep is 0
-- vlanetype/svlanetype are EtherType for the tag as uint16 number
-- customoption: format is "<option-id>:<value>" for example "60:dhcplt" means include an Option 60 with value as "dhcplt"
-- -v6m: setting the DHCPv6 message type:
+- vlanetype are EtherType for the tag as uint16 number
+- customv4option/customv6option: format is "<option-id>:<value>" for example "60:dhcplt" means include an Option 60 with value as "dhcplt"
+- -v6msgtype: setting the DHCPv6 message type:
       - solicit
       - relay
       - auto: if rid or cid is specified, then it is relay; otherwise solict
-- flap: the number of clients flapping
-- maxflapint, minflapint: the duration a flapping client stay connected, it is random value between min and max
-- flapstaydown: the duration a flapping client stay disconnected. 
+- flapnum: the number of clients flapping
+- flapmaxinterval, flapmininterval: the duration a flapping client stay connected, it is random value between min and max
+- flapstaydowndur: the duration a flapping client stay disconnected. 

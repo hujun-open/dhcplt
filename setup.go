@@ -136,9 +136,10 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 }
 
 type FlappingConf struct {
-	FlapNum                  int
-	MinInterval, MaxInterval time.Duration
-	StayDownDur              time.Duration
+	FlapNum     int           `alias:"flapnum" usage:"number of client flapping"`
+	MinInterval time.Duration `alias:"flapmaxinterval" usage:"minimal flapping interval"`
+	MaxInterval time.Duration `alias:"flapmininterval"usage:"max flapping interval"`
+	StayDownDur time.Duration `alias:"flapstaydowndur" usage:"duriation of stay down"`
 }
 
 const (
