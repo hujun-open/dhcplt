@@ -1,0 +1,24 @@
+# .github/workflows/release.yaml
+on:
+  release:
+    types: [created]
+
+jobs:
+  releases-matrix:
+    permissions: write-all
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64]
+        
+    steps:
+
+    - uses: actions/checkout@v3
+    - uses: wangyoucao577/go-release-action@v1
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        pre_command: "apt-get update && apt-get -y install libpcap-dev && go get ."
