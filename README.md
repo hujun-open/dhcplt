@@ -176,3 +176,6 @@ Usage:
 - flapnum: the number of clients flapping
 - flapmaxinterval, flapmininterval: the duration a flapping client stay connected, it is random value between min and max
 - flapstaydowndur: the duration a flapping client stay disconnected. 
+
+### Config File
+Thanks to [shouchan](https://github.com/hujun-open/shouchan), beside using CLI parameters, a YAML config file could also be used via "-f <conf_file>", the content of YAML is the `testSetup` struct 
