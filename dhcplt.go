@@ -144,12 +144,14 @@ func main() {
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	cnf, err := shouchan.NewSConfCMDLine(newDefaultConf(), "")
+	cnf, err := shouchan.NewSConf(newDefaultConf(), "dhcplt",
+		"a DHCP load tester", shouchan.WithDefaultConfigFilePath[*testSetup]("dhcplt.conf"))
 	if err != nil {
 		panic(err)
 	}
 	cnf.ReadwithCMDLine()
 	setup := cnf.GetConf()
+	// fmt.Printf("%+v\n", setup)
 	err = setup.init()
 	if err != nil {
 		log.Fatalf("invalid setup, %v", err)
