@@ -8,7 +8,7 @@ require (
 	github.com/hujun-open/cmprule v0.3.0
 	github.com/hujun-open/etherconn v0.6.1
 	github.com/hujun-open/myaddr v0.1.1
-	github.com/hujun-open/shouchan v0.3.3
+	github.com/hujun-open/shouchan v0.3.4
 	github.com/insomniacslk/dhcp v0.0.0-20230516061539-49801966e6cb
 	github.com/vishvananda/netlink v1.1.0
 )
@@ -21,7 +21,7 @@ require (
 	github.com/asavie/xdp v0.3.4-0.20211113171712-711132ccc429 // indirect
 	github.com/cilium/ebpf v0.8.1 // indirect
 	github.com/hujun-open/extyaml v0.4.0 // indirect
-	github.com/hujun-open/myflags v0.3.1 // indirect
+	github.com/hujun-open/myflags v0.3.2 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/mdlayher/packet v1.1.1 // indirect
 	github.com/mdlayher/socket v0.4.0 // indirect

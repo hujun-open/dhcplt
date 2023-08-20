@@ -71,7 +71,7 @@ dhcplt -i eth1 -n 10000 -v4=false -v6=true -iapd=true -iana=true -sendrs
 
 11. example 8 variant, simulating relay
 ```
-dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6m=relay
+dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6msgtype relay
 ```
 
 12. example 1 variant, 5000 clients flapping
@@ -105,64 +105,66 @@ Avg dial success time:135.940204ms
 ## Command Line Parameters
 
 ```
-Usage:
-  -f <filepath> : read from config file <filepath>
-  -applylease <struct> : apply assigned address on the interface if true
+a DHCP load tester
+  - applylease: apply assigned address on the interface if true
         default:false
-  -cid <struct> : BBF circuit-id
-  -clntid <struct> : client-id
-  -customv4option <struct> : custom DHCPv4 option, code:value format
-  -customv6option <struct> : custom DHCPv6 option, code:value format
-  -d <struct> : enable debug output
+  - cid: BBF circuit-id
+  - clntid: client-id
+  - customv4option: custom DHCPv4 option, code:value format
+  - customv6option: custom DHCPv6 option, code:value format
+  - d: enable debug output
         default:false
-  -driver <struct> : etherconn forward engine
+  - driver: etherconn forward engine
         default:afpkt
-  -excludedvlans <struct> : a list of excluded VLAN IDs
-  -flapmaxinterval <struct> : minimal flapping interval
+  - excludedvlans: a list of excluded VLAN IDs
+  - flapmaxinterval: minimal flapping interval
         default:5s
-  -flapmininterval <struct> : max flapping interval
+  - flapmininterval: max flapping interval
         default:30s
-  -flapnum <struct> : number of client flapping
+  - flapnum: number of client flapping
         default:0
-  -flapstaydowndur <struct> : duriation of stay down
+  - flapstaydowndur: duriation of stay down
         default:10s
-  -i <struct> : interface name
-  -interval <struct> : interval between setup of sessions
+  - i: interface name
+  - interval: interval between setup of sessions
         default:1s
-  -mac <struct> : starting MAC address
-  -macstep <struct> : amount of increase between two consecutive MAC address
+  - mac: starting MAC address
+  - macstep: amount of increase between two consecutive MAC address
         default:1
-  -n <struct> : number of clients
+  - n: number of clients
         default:1
-  -needna <struct> : request DHCPv6 IANA if true
+  - needna: request DHCPv6 IANA if true
         default:false
-  -needpd <struct> : request DHCPv6 IAPD if true
+  - needpd: request DHCPv6 IAPD if true
         default:false
-  -profiling <struct> : enable profiling, dev use only
+  - profiling: enable profiling, dev use only
         default:false
-  -retry <struct> : number of setup retry
+  - retry: number of setup retry
         default:1
-  -rid <struct> : BBF remote-id
-  -savelease <struct> : save the lease if true
+  - rid: BBF remote-id
+  - savelease: save the lease if true
         default:false
-  -sendrsfirst <struct> : send Router Solict first if true
+  - sendrsfirst: send Router Solict first if true
         default:false
-  -stackdelay <struct> : delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first
+  - stackdelay: delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first
         default:0s
-  -timeout <struct> : setup timout
+  - timeout: setup timout
         default:5s
-  -v4 <struct> : do DHCPv4 if true
+  - v4: do DHCPv4 if true
         default:true
-  -v6 <struct> : do DHCPv6 if true
+  - v6: do DHCPv6 if true
         default:false
-  -v6msgtype <struct> : DHCPv6 exchange type, solict|relay|auto
+  - v6msgtype: DHCPv6 exchange type, solict|relay|auto
         default:auto
-  -vendorclass <struct> : vendor class
-  -vlan <struct> : starting VLAN ID, Dot1Q or QinQ
-  -vlanetype <struct> : EthernetType for the vlan tag
+  - vendorclass: vendor class
+  - vlan: starting VLAN ID, Dot1Q or QinQ
+  - vlanetype: EthernetType for the vlan tag
         default:33024
-  -vlanstep <struct> : amount of increase between two consecutive VLAN ID
+  - vlanstep: amount of increase between two consecutive VLAN ID
         default:1
+
+  -cfgfromfile: load configuration from the specified file
+        default:dhcplt.conf
 
 ```
 - interval: this is wait interval between launch client DORA

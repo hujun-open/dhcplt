@@ -25,7 +25,7 @@ type testSetup struct {
 	StartMAC     net.HardwareAddr `alias:"mac" usage:"starting MAC address"`
 	MacStep      uint             `usage:"amount of increase between two consecutive MAC address"`
 	StartVLANs   etherconn.VLANs  `alias:"vlan" usage:"starting VLAN ID, Dot1Q or QinQ"`
-	VLANEType    uint             `usage:"EthernetType for the vlan tag"`
+	VLANEType    uint             `usage:"EthernetType for the vlan tag" base:"16"`
 	VLANStep     uint             `usage:"amount of increase between two consecutive VLAN ID"`
 
 	ExcludedVLANs  []uint16             `usage:"a list of excluded VLAN IDs"`
