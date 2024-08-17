@@ -16,6 +16,7 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
             - Custom option
 - DHCPv6:
 
+      - Support DORA and Release
       - Request for IA_NA and/or IA_PD prefix
       - Send request in relay-forward message to simulate a relayed message, and handle the relay-reply message
       - following DHCPv6 options could be included in request:
@@ -79,6 +80,21 @@ dhcplt -i eth1 -n 10000 -v4=false -v6=true -v6msgtype relay
 dhcplt -i eth1 -n 10000 -flap 5000 
 ```
 
+13. example 1 variant, save lease to file
+```
+dhcplt -i eth1 -n 10000 -savelease
+```
+
+14. using saved lease file to send release msg, only release v4 leases in the file
+```
+dhcplt -i eth1 -action release
+```
+
+15. example 14 variant, release both v4 and v6 leases
+```
+dhcplt -i eth1 -action release -v6
+```
+
 ## DORA Result Summary
 With action DORA, dhcplt will display a summary of results after it s done like following:
 ```
@@ -106,6 +122,8 @@ Avg dial success time:135.940204ms
 
 ```
 a DHCP load tester
+  - action: dora | release
+        default:dora
   - applylease: apply assigned address on the interface if true
         default:false
   - cid: BBF circuit-id
@@ -128,6 +146,8 @@ a DHCP load tester
   - i: interface name
   - interval: interval between setup of sessions
         default:1s
+  - leasefile:
+        default:dhcplt.lease
   - mac: starting MAC address
   - macstep: amount of increase between two consecutive MAC address
         default:1
@@ -159,12 +179,13 @@ a DHCP load tester
   - vendorclass: vendor class
   - vlan: starting VLAN ID, Dot1Q or QinQ
   - vlanetype: EthernetType for the vlan tag
-        default:33024
+        default:0x8100
   - vlanstep: amount of increase between two consecutive VLAN ID
         default:1
 
   -cfgfromfile: load configuration from the specified file
         default:dhcplt.conf
+
 
 ```
 - interval: this is wait interval between launch client DORA

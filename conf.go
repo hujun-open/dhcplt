@@ -56,10 +56,15 @@ type testSetup struct {
 	Flapping    *FlappingConf       `usage:"enable flapping"`
 	SendRSFirst bool                `usage:"send Router Solict first if true"`
 	Profiling   bool                `usage:"enable profiling, dev use only"`
+	LeaseFile   string
+	Action      actionType `usage:"dora | release"`
+	saveV4Chan  chan *v4LeaseWithID
+	saveV6Chan  chan *v6LeaseWithID
 }
 
 func newDefaultConf() *testSetup {
 	return &testSetup{
+		Action:       actionDORA,
 		NumOfClients: 1,
 		StartMAC:     []byte{},
 		MacStep:      1,
@@ -72,6 +77,7 @@ func newDefaultConf() *testSetup {
 		EnableV6:     false,
 		V6MsgType:    dhcpv6.MessageTypeNone,
 		Driver:       etherconn.RelayTypeAFP,
+		LeaseFile:    "dhcplt.lease",
 		Flapping: &FlappingConf{
 			FlapNum:     0,
 			MinInterval: defaultMinFlapInt,
@@ -91,6 +97,8 @@ func (setup *testSetup) excluded(vids []uint16) bool {
 	}
 	return false
 }
+
+const saveChanDepth = 8
 
 func (setup *testSetup) init() error {
 	if setup.Ifname == "" {
@@ -151,6 +159,15 @@ func (setup *testSetup) init() error {
 	}
 	if setup.Flapping.MinInterval > setup.Flapping.MaxInterval {
 		return fmt.Errorf("minimal flapping interval %v is bigger than max value %v", setup.Flapping.MinInterval, setup.Flapping.MaxInterval)
+	}
+
+	if setup.SaveLease || setup.Action == actionRelease {
+		if setup.EnableV4 {
+			setup.saveV4Chan = make(chan *v4LeaseWithID, saveChanDepth)
+		}
+		if setup.EnableV6 {
+			setup.saveV6Chan = make(chan *v6LeaseWithID, saveChanDepth)
+		}
 	}
 
 	return nil

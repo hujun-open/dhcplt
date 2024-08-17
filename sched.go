@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"sync"
@@ -31,11 +32,35 @@ const (
 	actionRelease
 )
 
+func (act actionType) MarshalText() (text []byte, err error) {
+	switch act {
+	default:
+		return nil, fmt.Errorf("unkown action %d", act)
+	case actionDORA:
+		return []byte("dora"), nil
+	case actionRelease:
+		return []byte("release"), nil
+	}
+}
+
+func (act *actionType) UnmarshalText(text []byte) error {
+	switch string(text) {
+	default:
+		return fmt.Errorf("unknown action %s", text)
+	case "dora":
+		*act = actionDORA
+		return nil
+	case "release":
+		*act = actionRelease
+		return nil
+	}
+}
+
 type dialResult struct {
 	IsDHCPv6   bool
 	action     actionType
 	ExecResult execResult
-	L2EP       etherconn.L2EndpointKey
+	L2EP       clientID
 	StartTime  time.Time
 	FinishTime time.Time
 }
@@ -49,7 +74,7 @@ type DClient struct {
 	d4Lease       *v4Lease
 	d6Lease       *v6Lease
 	cfg           *clientConfig
-	id            etherconn.L2EndpointKey
+	id            clientID
 	dialResultCh  chan *dialResult
 	// saveLeaseCh  chan interface{}
 }
@@ -78,8 +103,101 @@ func (dc *DClient) createV6ReleaseClnt() error {
 	if dc.d6Lease == nil {
 		return fmt.Errorf("can't create v6 release client for %v without v6 lease", dc.id)
 	}
-	dc.d6ReleaseClnt = dc.d6
+	// dc.d6ReleaseClnt = dc.d6
+	rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
+		myaddr.GetLLAFromMac(dc.d6Lease.MAC),
+		dhcpv6.DefaultClientPort), dc.cfg.v6econn, etherconn.WithAcceptAny(true))
+	if err != nil {
+		return fmt.Errorf("failed to create raw udp conn for %v release, %w", dc.id, err)
+	}
+	dc.d6ReleaseClnt, err = nclient6.NewWithConn(rudpconn, dc.d6Lease.MAC)
+	if err != nil {
+		return fmt.Errorf("failed to create dhcp6 client %v for release, %w", dc.id, err)
+	}
 	return nil
+}
+
+func (dc *DClient) releaseAll(wg *sync.WaitGroup) {
+
+	var err error
+	if wg != nil {
+		defer wg.Done()
+	}
+	subwg := new(sync.WaitGroup)
+
+	if dc.cfg.setup.EnableV4 {
+		dc.cfg.v4econn = etherconn.NewEtherConn(dc.d4Lease.Lease.ACK.ClientHWAddr, dc.cfg.setup.pktRelay,
+			etherconn.WithVLANs(dc.d4Lease.VLANList),
+			etherconn.WithEtherTypes([]uint16{EthernetTypeIPv4}))
+	}
+	if dc.cfg.setup.EnableV6 {
+		dc.cfg.v6econn = etherconn.NewEtherConn(dc.d6Lease.MAC, dc.cfg.setup.pktRelay,
+			etherconn.WithVLANs(dc.d6Lease.VLANList),
+			etherconn.WithEtherTypes([]uint16{EthernetTypeIPv6}))
+	}
+
+	//create release clients
+	if dc.d4Lease != nil && dc.cfg.setup.EnableV4 {
+		err = dc.createV4ReleaseClnt()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	if dc.d6Lease != nil && dc.cfg.setup.EnableV6 {
+		err = dc.createV6ReleaseClnt()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	if dc.cfg.setup.StackDelay >= 0 {
+		//do v4 first
+		if dc.d4ReleaseClnt != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.releasev4(subwg)
+				if err != nil {
+					common.MyLog("failed to release DHCPv4, %v", err)
+				}
+			}()
+		}
+		time.Sleep(dc.cfg.setup.StackDelay)
+		if dc.d6ReleaseClnt != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.releasev6(subwg)
+				if err != nil {
+					common.MyLog("failed to release DHCPv6, %v", err)
+				}
+			}()
+		}
+	} else {
+		//do v6 first
+		if dc.d6ReleaseClnt != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.releasev6(subwg)
+				if err != nil {
+					common.MyLog("failed to release DHCPv6, %v", err)
+				}
+			}()
+		}
+		time.Sleep(-1 * dc.cfg.setup.StackDelay)
+		if dc.d4ReleaseClnt != nil {
+			subwg.Add(1)
+			go func() {
+				err = dc.releasev4(subwg)
+				if err != nil {
+					common.MyLog("failed to release DHCPv4, %v", err)
+				}
+			}()
+		}
+
+	}
+	if dc.d4 != nil || dc.d6 != nil {
+		subwg.Wait()
+
+	}
+
 }
 
 func (dc *DClient) dialAll(wg *sync.WaitGroup) {
@@ -297,9 +415,12 @@ func (dc *DClient) dialv6(wg *sync.WaitGroup) error {
 			return fmt.Errorf("failed to apply v6 lease for clnt %v, %v", dc.id, err)
 		}
 	}
-	// if dc.cfg.setup.SaveLease {
-	// 	dc.saveLeaseCh <- lease
-	// }
+	if dc.cfg.setup.saveV6Chan != nil {
+		dc.cfg.setup.saveV6Chan <- &v6LeaseWithID{
+			ID:    getClientIDFromL2Key(dc.cfg.v6econn.LocalAddr().GetKey()),
+			Lease: lease,
+		}
+	}
 
 	result.ExecResult = resultSuccess
 	return nil
@@ -335,7 +456,8 @@ func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
 		return fmt.Errorf("failed complete DORA for %v,%v", dc.id, err)
 	}
 	dc.d4Lease = newV4Lease()
-	dc.d4Lease.Lease = lease
+	myl := myDHCPv4Lease(*lease)
+	dc.d4Lease.Lease = &myl
 	dc.d4Lease.VLANList = dc.cfg.VLANs
 	if dc.cfg.setup.ApplyLease {
 		err = dc.d4Lease.Apply(dc.cfg.setup.Ifname, true)
@@ -343,6 +465,23 @@ func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
 			return fmt.Errorf("failed to apply v4 lease for clnt %v, %v", dc.id, err)
 		}
 	}
+	if dc.cfg.setup.saveV4Chan != nil {
+		dc.cfg.setup.saveV4Chan <- &v4LeaseWithID{
+			ID:    getClientIDFromL2Key(dc.cfg.v4econn.LocalAddr().GetKey()),
+			Lease: dc.d4Lease,
+		}
+	}
+	//NOTE: following is test code
+	// buf, err := dc.d4Lease.MarshalBinary()
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// l2 := new(v4Lease)
+	// err = l2.UnmarshalBinary(buf)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	//END of test
 	// if dc.cfg.setup.SaveLease {
 	// 	dc.saveLeaseCh <- dc.d4Lease
 	// }
@@ -351,7 +490,14 @@ func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
 	return nil
 }
 
-func (dc *DClient) releasev4() error {
+func (dc *DClient) releasev4(wg *sync.WaitGroup) error {
+	common.MyLog("releasing v4 for %v", dc.id)
+	if wg != nil {
+		defer wg.Done()
+	}
+	if dc.d4Lease == nil {
+		return nil
+	}
 	modList := []dhcpv4.Modifier{}
 	for t := range dc.d4Lease.IDOptions {
 		modList = append(modList,
@@ -360,7 +506,8 @@ func (dc *DClient) releasev4() error {
 	}
 	var err error
 	for i := 0; i < 3; i++ {
-		err = dc.d4ReleaseClnt.Release(dc.d4Lease.Lease, modList...)
+		dl := nclient4.Lease(*dc.d4Lease.Lease)
+		err = dc.d4ReleaseClnt.Release(&dl, modList...)
 		if err == nil {
 			break
 		}
@@ -368,6 +515,9 @@ func (dc *DClient) releasev4() error {
 	result := new(dialResult)
 	result.StartTime = time.Now()
 	result.ExecResult = resultSuccess
+	if err != nil {
+		result.ExecResult = resultFailure
+	}
 	result.action = actionRelease
 	result.IsDHCPv6 = false
 	result.L2EP = dc.id
@@ -382,7 +532,14 @@ func (dc *DClient) releasev4() error {
 	return nil
 }
 
-func (dc *DClient) releasev6() error {
+func (dc *DClient) releasev6(wg *sync.WaitGroup) error {
+	common.MyLog("releasing v6 for %v", dc.id)
+	if wg != nil {
+		defer wg.Done()
+	}
+	if dc.d6Lease == nil {
+		return nil
+	}
 	result := new(dialResult)
 	result.ExecResult = resultSuccess
 	result.action = actionRelease
@@ -412,7 +569,7 @@ func (dc *DClient) releasev6() error {
 }
 
 type Sched struct {
-	ClntList     map[etherconn.L2EndpointKey]*DClient
+	ClntList     map[clientID]*DClient
 	dialResultCh chan *dialResult
 	summary      *resultSummary
 	setup        *testSetup
@@ -425,9 +582,30 @@ const (
 func NewSched(setup *testSetup) (*Sched, error) {
 	r := new(Sched)
 	r.setup = setup
+	r.ClntList = make(map[clientID]*DClient)
 	r.summary = newResultSummary(setup)
 	r.dialResultCh = make(chan *dialResult, dialResultChanLen)
-	r.ClntList = make(map[etherconn.L2EndpointKey]*DClient)
+	if setup.Action == actionRelease {
+		saveLeases, err := loadLeaseFromFile(setup.LeaseFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("loaded %d leases from %v\n", len(saveLeases), setup.LeaseFile)
+		for id, fullLeases := range saveLeases {
+			dc := new(DClient)
+			dc.cfg = new(clientConfig)
+			dc.cfg.setup = setup
+			dc.id = id
+			dc.d4Lease = fullLeases.V4
+			fmt.Printf("%v v4 lease loaded is %+v\n", dc.id, dc.d4Lease)
+			dc.d6Lease = fullLeases.V6
+			fmt.Printf("%v v6 lease loaded is %+v\n", dc.id, dc.d6Lease)
+			dc.dialResultCh = r.dialResultCh
+			r.ClntList[id] = dc
+		}
+		return r, nil
+	}
+
 	clntConfs, err := genClientConfigurations(setup)
 	if err != nil {
 		return nil, err
@@ -500,9 +678,9 @@ func NewSched(setup *testSetup) (*Sched, error) {
 
 			}
 		}
-		dc.id = key
+		dc.id = getClientIDFromL2Key(key)
 		dc.dialResultCh = r.dialResultCh
-		r.ClntList[key] = dc
+		r.ClntList[dc.id] = dc
 	}
 	//start NDPProxy for DHCPv6
 	if r.setup.EnableV6 {
@@ -575,101 +753,131 @@ func (sch *Sched) Stop() {
 }
 func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 	defer taskWG.Done()
-	//intial dialing
-	wg := new(sync.WaitGroup)
 	otherTG := new(sync.WaitGroup)
 	otherTG.Add(1)
 	go sch.collectResults(otherTG)
-	var err error
-	for _, c := range sch.ClntList {
-		wg.Add(1)
-		go c.dialAll(wg)
-		time.Sleep(sch.setup.Interval)
-	}
-	wg.Wait()
-	common.MyLog("dial finished")
-	time.Sleep(time.Second)
-	fmt.Printf("\ninitial dialing resutls are:\n%v", sch.summary)
-	if sch.setup.Flapping != nil {
-		if sch.setup.Flapping.FlapNum > 0 {
-			for _, cc := range sch.ClntList {
-				if cc.d4ReleaseClnt == nil && cc.d4Lease != nil {
-					err = cc.createV4ReleaseClnt()
-					if err != nil {
-						common.MyLog("%v", err)
-						return
-					}
-				}
-				if cc.d6ReleaseClnt == nil && cc.d6Lease != nil {
-					err = cc.createV6ReleaseClnt()
-					if err != nil {
-						common.MyLog("%v", err)
-						return
-					}
-				}
-			}
-			fmt.Printf("\nstart flapping %d clients...\n", sch.setup.Flapping.FlapNum)
-			intervalRange := sch.setup.Flapping.MaxInterval - sch.setup.Flapping.MinInterval
-			flapFunc := func(ctx context.Context, dc *DClient, wg *sync.WaitGroup) {
-				defer wg.Done()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					time.Sleep(sch.setup.Flapping.MinInterval + time.Duration(rand.Int63n(int64(intervalRange))))
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					if dc.d4Lease != nil {
-						err = dc.releasev4()
-						if err != nil {
-							common.MyLog("%v", err)
-						}
-					}
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					if dc.d6Lease != nil {
-						err = dc.releasev6()
-						if err != nil {
-							common.MyLog("%v", err)
-						}
-					}
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					time.Sleep(sch.setup.Flapping.StayDownDur)
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					dc.dialAll(nil)
-				}
-			}
-			i := 0
-			wg = new(sync.WaitGroup)
-			for _, dc := range sch.ClntList {
-				if i < sch.setup.Flapping.FlapNum {
-					wg.Add(1)
-					go flapFunc(ctx, dc, wg)
-				}
-			}
-			wg.Wait()
-			fmt.Printf("\nFinal result:\n%v", sch.summary)
+	//check save lease
+	switch sch.setup.Action {
+	default:
+		log.Fatal("invalid action", sch.setup.Action)
+	case actionRelease:
+		releaseWG := new(sync.WaitGroup)
+		for _, c := range sch.ClntList {
+			releaseWG.Add(1)
+			go c.releaseAll(releaseWG)
+			time.Sleep(sch.setup.Interval)
 		}
+		releaseWG.Wait()
+		fmt.Printf("\nrelease resutls are:\n%v", sch.summary)
+	case actionDORA:
+		//save lease
+		var savectx context.Context
+		var savecancelf context.CancelFunc
+		saveWG := new(sync.WaitGroup)
+		if sch.setup.SaveLease {
+			savectx, savecancelf = context.WithCancel(ctx)
+			saveWG.Add(1)
+			go saveLeaseToFiles(savectx, saveWG, sch.setup.saveV4Chan,
+				sch.setup.saveV6Chan, sch.setup.LeaseFile)
+		}
+		//intial dialing
+		wg := new(sync.WaitGroup)
+
+		var err error
+		for _, c := range sch.ClntList {
+			wg.Add(1)
+			go c.dialAll(wg)
+			time.Sleep(sch.setup.Interval)
+		}
+		wg.Wait()
+		common.MyLog("dial finished")
+		time.Sleep(time.Second)
+		if sch.setup.SaveLease {
+			savecancelf()
+			saveWG.Wait()
+		}
+		fmt.Printf("\ninitial dialing resutls are:\n%v", sch.summary)
+		if sch.setup.Flapping != nil {
+			if sch.setup.Flapping.FlapNum > 0 {
+				for _, cc := range sch.ClntList {
+					if cc.d4ReleaseClnt == nil && cc.d4Lease != nil {
+						err = cc.createV4ReleaseClnt()
+						if err != nil {
+							common.MyLog("%v", err)
+							return
+						}
+					}
+					if cc.d6ReleaseClnt == nil && cc.d6Lease != nil {
+						err = cc.createV6ReleaseClnt()
+						if err != nil {
+							common.MyLog("%v", err)
+							return
+						}
+					}
+				}
+				fmt.Printf("\nstart flapping %d clients...\n", sch.setup.Flapping.FlapNum)
+				intervalRange := sch.setup.Flapping.MaxInterval - sch.setup.Flapping.MinInterval
+				flapFunc := func(ctx context.Context, dc *DClient, wg *sync.WaitGroup) {
+					defer wg.Done()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						time.Sleep(sch.setup.Flapping.MinInterval + time.Duration(rand.Int63n(int64(intervalRange))))
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						if dc.d4Lease != nil {
+							err = dc.releasev4(nil)
+							if err != nil {
+								common.MyLog("%v", err)
+							}
+						}
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						if dc.d6Lease != nil {
+							err = dc.releasev6(nil)
+							if err != nil {
+								common.MyLog("%v", err)
+							}
+						}
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						time.Sleep(sch.setup.Flapping.StayDownDur)
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						dc.dialAll(nil)
+					}
+				}
+				i := 0
+				wg = new(sync.WaitGroup)
+				for _, dc := range sch.ClntList {
+					if i < sch.setup.Flapping.FlapNum {
+						wg.Add(1)
+						go flapFunc(ctx, dc, wg)
+					}
+				}
+				wg.Wait()
+				fmt.Printf("\nFinal result:\n%v", sch.summary)
+			}
+		}
+
 	}
 	close(sch.dialResultCh)
 	otherTG.Wait()
-
 }
 
 func getIAIDviaInt(v uint32) (r [4]byte) {
