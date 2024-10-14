@@ -103,8 +103,19 @@ func (dc *DClient) createV4OtherClnt(act actionType) error {
 	if dc.d4Lease == nil {
 		return fmt.Errorf("can't create v4 release client for %v without v4 lease", dc.id)
 	}
-	rudpconn, err := etherconn.NewRUDPConn(
-		myaddr.GenConnectionAddrStr("", dc.d4Lease.Lease.ACK.YourIPAddr, 68), dc.cfg.v4econn)
+	localPort := dhcpv4.ClientPort
+	if !dc.cfg.setup.GiAddr.IsUnspecified() {
+		localPort = dhcpv4.ServerPort
+	}
+	if dc.cfg.setup.SourceV4Port != dhcpv4.ClientPort {
+		localPort = int(dc.cfg.setup.SourceV4Port)
+	}
+
+	localaddr := myaddr.GenConnectionAddrStr("", dc.d4Lease.Lease.ACK.YourIPAddr, localPort)
+	if !dc.cfg.setup.SourceV4Addr.IsUnspecified() {
+		localaddr = myaddr.GenConnectionAddrStr("", dc.cfg.setup.SourceV4Addr.AsSlice(), localPort)
+	}
+	rudpconn, err := etherconn.NewRUDPConn(localaddr, dc.cfg.v4econn)
 	if err != nil {
 		return fmt.Errorf("failed to create raw udp conn for %v release,%v", dc.id, err)
 	}
@@ -133,16 +144,42 @@ func (dc *DClient) createV6OtherClnt() error {
 		return fmt.Errorf("can't create v6 release client for %v without v6 lease", dc.id)
 	}
 	// dc.d6ReleaseClnt = dc.d6
-	rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
+
+	localaddr := fmt.Sprintf("[%v]:%v",
 		myaddr.GetLLAFromMac(dc.d6Lease.MAC),
-		dhcpv6.DefaultClientPort), dc.cfg.v6econn, etherconn.WithAcceptAny(true))
-	if err != nil {
-		return fmt.Errorf("failed to create raw udp conn for %v release, %w", dc.id, err)
+		dc.cfg.setup.SourceV6Port)
+	if !dc.cfg.setup.SourceV6Addr.IsUnspecified() {
+		localaddr = fmt.Sprintf("[%v]:%v",
+			dc.cfg.setup.SourceV6Addr,
+			dc.cfg.setup.SourceV6Port)
 	}
-	dc.d6OtherClnt, err = nclient6.NewWithConn(rudpconn, dc.d6Lease.MAC)
+	// var rudpconn *etherconn.RUDPConn
+	// var err error
+	rudpconn, err := etherconn.NewRUDPConn(localaddr, dc.cfg.v6econn, etherconn.WithAcceptAny(true))
 	if err != nil {
-		return fmt.Errorf("failed to create dhcp6 client %v for release, %w", dc.id, err)
+		return fmt.Errorf("failed to create raw udp conn for %v for other actions, %w", dc.id, err)
 	}
+	switch dc.cfg.setup.V6MsgType {
+	case dhcpv6.MessageTypeSolicit:
+
+		dc.d6OtherClnt, err = nclient6.NewWithConn(rudpconn, dc.d6Lease.MAC)
+		if err != nil {
+			return fmt.Errorf("failed to create dhcp6 client %v for other actions, %w", dc.id, err)
+		}
+	case dhcpv6.MessageTypeRelayForward:
+		accessConClnt, accessConRelay := conpair.NewPacketConnPair()
+		dc.d6OtherClnt, err = nclient6.NewWithConn(accessConClnt, dc.d6Lease.MAC)
+		if err != nil {
+			return fmt.Errorf("failed to create dhcp6 client %v for for other actions, %w", dc.id, err)
+		}
+		dc.d6relay = dhcpv6relay.NewRelayAgent(context.Background(),
+			&dhcpv6relay.PairDHCPConn{PacketConnPair: accessConRelay},
+			&dhcpv6relay.RUDPDHCPConn{RUDPConn: rudpconn},
+			dhcpv6relay.WithLinkAddr(net.ParseIP("::")),
+			dhcpv6relay.WithPeerAddr(myaddr.GetLLAFromMac(dc.d6Lease.MAC)),
+			dhcpv6relay.WithOptions(dc.d6Lease.RelayIDOptions))
+	}
+
 	return nil
 }
 
@@ -706,7 +743,18 @@ func NewSched(setup *testSetup) (*Sched, error) {
 		var key etherconn.L2EndpointKey
 		if dc.cfg.v4econn != nil {
 			key = dc.cfg.v4econn.LocalAddr().GetKey()
-			rudpconn, err := etherconn.NewRUDPConn("0.0.0.0:68", dc.cfg.v4econn,
+			localPort := dhcpv4.ClientPort
+			if !dc.cfg.setup.GiAddr.IsUnspecified() {
+				localPort = dhcpv4.ServerPort
+			}
+			if dc.cfg.setup.SourceV4Port != dhcpv4.ClientPort {
+				localPort = int(dc.cfg.setup.SourceV4Port)
+			}
+			localaddr := fmt.Sprintf("0.0.0.0:%d", localPort)
+			if !dc.cfg.setup.SourceV4Addr.IsUnspecified() {
+				localaddr = fmt.Sprintf("%v:%d", dc.cfg.setup.SourceV4Addr, localPort)
+			}
+			rudpconn, err := etherconn.NewRUDPConn(localaddr, dc.cfg.v4econn,
 				etherconn.WithAcceptAny(true))
 			if err != nil {
 				return nil, fmt.Errorf("failed to create raw udp conn for %v,%v", dc.cfg.Mac, err)
@@ -734,9 +782,16 @@ func NewSched(setup *testSetup) (*Sched, error) {
 			}
 
 			key = dc.cfg.v6econn.LocalAddr().GetKey()
-			rudpconn, err := etherconn.NewRUDPConn(fmt.Sprintf("[%v]:%v",
+
+			localaddr := fmt.Sprintf("[%v]:%v",
 				myaddr.GetLLAFromMac(dc.cfg.Mac),
-				dhcpv6.DefaultClientPort), dc.cfg.v6econn, etherconn.WithAcceptAny(true))
+				setup.SourceV6Port)
+			if !dc.cfg.setup.SourceV6Addr.IsUnspecified() {
+				localaddr = fmt.Sprintf("[%v]:%v",
+					dc.cfg.setup.SourceV6Addr,
+					setup.SourceV6Port)
+			}
+			rudpconn, err := etherconn.NewRUDPConn(localaddr, dc.cfg.v6econn, etherconn.WithAcceptAny(true))
 			if err != nil {
 				return nil, fmt.Errorf("failed to create raw udp conn for %v,%v", dc.cfg.Mac, err)
 			}

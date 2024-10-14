@@ -40,7 +40,10 @@ type testSetup struct {
 	ApplyLease     bool           `usage:"apply assigned address on the interface if true"`
 	Retry          uint           `usage:"number of setup retry"`
 	Timeout        time.Duration  `usage:"setup timout"`
-	GiAddr         netip.Addr     `usage:"Gi address for DHCPv4"`
+	GiAddr         netip.Addr     `usage:"Gi address for DHCPv4, simulating relay agent"`
+	SourceV4Addr   netip.Addr     `usage:"source address for DHCPv4" alias:"srcv4"`
+	SourceV6Port   uint16         `usage:"source port for egress DHCPv6 message" alias:"srcv6port"`
+	SourceV4Port   uint16         `usage:"source port for egress DHCPv4 message" alias:"srcv4port"`
 	//following are template str, $ID will be replaced by client id
 	RID         string `usage:"BBF remote-id"`
 	CID         string `usage:"BBF circuit-id"`
@@ -48,20 +51,21 @@ type testSetup struct {
 	VendorClass string `usage:"vendor class"`
 	EnableV4    bool   `alias:"v4" usage:"do DHCPv4 if true"`
 	//v6 specific
-	EnableV6    bool               `alias:"v6" usage:"do DHCPv6 if true"`
-	StackDelay  time.Duration      `usage:"delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first"`
-	V6MsgType   dhcpv6.MessageType `usage:"DHCPv6 exchange type, solict|relay|auto"`
-	NeedNA      bool               `usage:"request DHCPv6 IANA if true"`
-	NeedPD      bool               `usage:"request DHCPv6 IAPD if true"`
-	pktRelay    etherconn.PacketRelay
-	Driver      etherconn.RelayType `usage:"etherconn forward engine"`
-	Flapping    *FlappingConf       `usage:"enable flapping"`
-	SendRSFirst bool                `usage:"send Router Solict first if true"`
-	Profiling   bool                `usage:"enable profiling, dev use only"`
-	LeaseFile   string
-	Action      actionType `usage:"dora | release | renew | rebind"`
-	saveV4Chan  chan *v4LeaseWithID
-	saveV6Chan  chan *v6LeaseWithID
+	EnableV6     bool               `alias:"v6" usage:"do DHCPv6 if true"`
+	SourceV6Addr netip.Addr         `usage:"source address for DHCPv6" alias:"srcv6"`
+	StackDelay   time.Duration      `usage:"delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first"`
+	V6MsgType    dhcpv6.MessageType `usage:"DHCPv6 exchange type, solict|relay|auto"`
+	NeedNA       bool               `usage:"request DHCPv6 IANA if true"`
+	NeedPD       bool               `usage:"request DHCPv6 IAPD if true"`
+	pktRelay     etherconn.PacketRelay
+	Driver       etherconn.RelayType `usage:"etherconn forward engine"`
+	Flapping     *FlappingConf       `usage:"enable flapping"`
+	SendRSFirst  bool                `usage:"send Router Solict first if true"`
+	Profiling    bool                `usage:"enable profiling, dev use only"`
+	LeaseFile    string
+	Action       actionType `usage:"dora | release | renew | rebind"`
+	saveV4Chan   chan *v4LeaseWithID
+	saveV6Chan   chan *v6LeaseWithID
 }
 
 func newDefaultConf() *testSetup {
@@ -74,10 +78,15 @@ func newDefaultConf() *testSetup {
 		VLANStep:     1,
 		Interval:     time.Second,
 		GiAddr:       netip.MustParseAddr("0.0.0.0"),
+		SourceV4Addr: netip.MustParseAddr("0.0.0.0"),
+		SourceV6Addr: netip.MustParseAddr("::"),
 		Retry:        1,
 		Timeout:      5 * time.Second,
 		EnableV4:     true,
 		EnableV6:     false,
+		SourceV6Port: dhcpv6.DefaultClientPort,
+		SourceV4Port: dhcpv4.ClientPort,
+		NeedNA:       true,
 		V6MsgType:    dhcpv6.MessageTypeNone,
 		Driver:       etherconn.RelayTypeAFP,
 		LeaseFile:    "dhcplt.lease",
@@ -120,21 +129,46 @@ func (setup *testSetup) init() error {
 	if !setup.EnableV4 && !setup.EnableV6 {
 		return fmt.Errorf("both DHCPv4 and DHCPv6 are disabled")
 	}
+	if setup.SourceV4Port == 0 {
+		return fmt.Errorf("source v4 port can't be zero")
+	}
+	if setup.SourceV6Port == 0 {
+		return fmt.Errorf("source v6 port can't be zero")
+	}
+	if setup.EnableV4 {
+		if !setup.SourceV4Addr.IsUnspecified() {
+			if !setup.SourceV4Addr.Is4() || !setup.SourceV4Addr.IsGlobalUnicast() {
+				return fmt.Errorf("source v4 address must be an IPv4 unicast addr")
+			}
+		}
+		if setup.GiAddr.IsValid() {
+			if !setup.GiAddr.IsUnspecified() {
+				if !setup.GiAddr.Is4() || !setup.GiAddr.IsGlobalUnicast() {
+					return fmt.Errorf("gi address must be an IPv4 unicast addr")
+				}
+			}
+		} else {
+			setup.GiAddr = netip.MustParseAddr("0.0.0.0")
+		}
+		if setup.GiAddr.IsUnspecified() != setup.SourceV4Addr.IsUnspecified() {
+			fmt.Printf("warning: giaddr should be specified along with srcv4 address")
+		}
+	}
+	if setup.EnableV6 {
+		if !setup.SourceV6Addr.IsUnspecified() {
+			if !setup.SourceV6Addr.Is6() || !setup.SourceV6Addr.IsGlobalUnicast() {
+				return fmt.Errorf("source v6 address must be an IPv4 unicast addr")
+			}
+		}
+	}
+
 	if setup.NumOfClients == 0 {
 		return fmt.Errorf("number of client is 0")
 	}
 	for _, v := range setup.StartVLANs {
 		v.EtherType = uint16(setup.VLANEType)
 	}
-	if setup.GiAddr.IsValid() {
-		if !setup.GiAddr.IsUnspecified() {
-			if !setup.GiAddr.Is4() || !setup.GiAddr.IsGlobalUnicast() {
-				return fmt.Errorf("gi address must be an IPv4 unicast addr")
-			}
-		}
-	} else {
-		setup.GiAddr = netip.MustParseAddr("0.0.0.0")
-	}
+
 	setup.ExcludedVLANs = []uint16{}
 	for _, n := range setup.ExcludedVLANs {
 		if n > 4096 {

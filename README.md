@@ -8,6 +8,7 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 - DHCPv4
 
       - Support DORA, Release, Renew and Rebind
+      - source addr, port could be customized
       - Following DHCPv4 options could be included in request:
             - Client Id
             - Vendor Class
@@ -18,6 +19,7 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 - DHCPv6:
 
       - Support DORA Release, Renew and Rebind
+      - source addr, port could be customized
       - Request for IA_NA and/or IA_PD prefix
       - Send request in relay-forward message to simulate a relayed message, and handle the relay-reply message
       - following DHCPv6 options could be included in request:
@@ -132,7 +134,7 @@ Avg dial success time:135.940204ms
 ## Command Line Parameters
 
 ```
-a DHCP load tester, v0.7.0
+a DHCP load tester, unversioned
   - action: dora | release | renew | rebind
         default:dora
   - applylease: apply assigned address on the interface if true
@@ -154,7 +156,7 @@ a DHCP load tester, v0.7.0
         default:0
   - flapstaydowndur: duriation of stay down
         default:10s
-  - giaddr: Gi address for DHCPv4
+  - giaddr: Gi address for DHCPv4, simulating relay agent
         default:0.0.0.0
   - i: interface name
   - interval: interval between setup of sessions
@@ -167,7 +169,7 @@ a DHCP load tester, v0.7.0
   - n: number of clients
         default:1
   - needna: request DHCPv6 IANA if true
-        default:false
+        default:true
   - needpd: request DHCPv6 IAPD if true
         default:false
   - profiling: enable profiling, dev use only
@@ -179,6 +181,14 @@ a DHCP load tester, v0.7.0
         default:false
   - sendrsfirst: send Router Solict first if true
         default:false
+  - srcv4: source address for DHCPv4
+        default:0.0.0.0
+  - srcv4port: source port for egress DHCPv4 message
+        default:68
+  - srcv6: source address for DHCPv6
+        default:::
+  - srcv6port: source port for egress DHCPv6 message
+        default:546
   - stackdelay: delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first
         default:0s
   - timeout: setup timout
@@ -211,6 +221,8 @@ a DHCP load tester, v0.7.0
 - flapnum: the number of clients flapping
 - flapmaxinterval, flapmininterval: the duration a flapping client stay connected, it is random value between min and max
 - flapstaydowndur: the duration a flapping client stay disconnected. 
+- srcv4port: by default source port is 68, 67 if giaddr is specified; however it could overriden by this parameter
+
 
 ### Config File
 Thanks to [shouchan](https://github.com/hujun-open/shouchan), beside using CLI parameters, a YAML config file could also be used via "-f <conf_file>", the content of YAML is the `testSetup` struct 
