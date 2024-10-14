@@ -30,7 +30,17 @@ type actionType int
 const (
 	actionDORA actionType = iota
 	actionRelease
+	actionRenew
+	actionRebind
 )
+
+func (act actionType) String() string {
+	buf, err := act.MarshalText()
+	if err != nil {
+		return err.Error()
+	}
+	return string(buf)
+}
 
 func (act actionType) MarshalText() (text []byte, err error) {
 	switch act {
@@ -40,6 +50,10 @@ func (act actionType) MarshalText() (text []byte, err error) {
 		return []byte("dora"), nil
 	case actionRelease:
 		return []byte("release"), nil
+	case actionRenew:
+		return []byte("renew"), nil
+	case actionRebind:
+		return []byte("rebind"), nil
 	}
 }
 
@@ -52,6 +66,12 @@ func (act *actionType) UnmarshalText(text []byte) error {
 		return nil
 	case "release":
 		*act = actionRelease
+		return nil
+	case "renew":
+		*act = actionRenew
+		return nil
+	case "rebind":
+		*act = actionRebind
 		return nil
 	}
 }
@@ -66,20 +86,20 @@ type dialResult struct {
 }
 
 type DClient struct {
-	d4            *nclient4.Client
-	d6            *nclient6.Client
-	d4ReleaseClnt *nclient4.Client
-	d6ReleaseClnt *nclient6.Client
-	d6relay       *dhcpv6relay.RelayAgent
-	d4Lease       *v4Lease
-	d6Lease       *v6Lease
-	cfg           *clientConfig
-	id            clientID
-	dialResultCh  chan *dialResult
+	d4           *nclient4.Client
+	d6           *nclient6.Client
+	d4OtherClnt  *nclient4.Client //for release or renew
+	d6OtherClnt  *nclient6.Client // for release or renew
+	d6relay      *dhcpv6relay.RelayAgent
+	d4Lease      *v4Lease
+	d6Lease      *v6Lease
+	cfg          *clientConfig
+	id           clientID
+	dialResultCh chan *dialResult
 	// saveLeaseCh  chan interface{}
 }
 
-func (dc *DClient) createV4ReleaseClnt() error {
+func (dc *DClient) createV4OtherClnt(act actionType) error {
 	if dc.d4Lease == nil {
 		return fmt.Errorf("can't create v4 release client for %v without v4 lease", dc.id)
 	}
@@ -91,15 +111,24 @@ func (dc *DClient) createV4ReleaseClnt() error {
 	clntModList := []nclient4.ClientOpt{nclient4.WithHWAddr(dc.d4Lease.Lease.ACK.ClientHWAddr)}
 	if dc.cfg.setup.Debug {
 		clntModList = append(clntModList, nclient4.WithDebugLogger())
+
 	}
-	dc.d4ReleaseClnt, err = nclient4.NewWithConn(rudpconn, dc.d4Lease.Lease.ACK.ClientHWAddr, clntModList...)
+	if act != actionRebind {
+		svrUDPAddr := &net.UDPAddr{
+			IP:   dc.d4Lease.Lease.ACK.ServerIdentifier(),
+			Port: dhcpv4.ServerPort,
+		}
+		clntModList = append(clntModList, nclient4.WithServerAddr(svrUDPAddr))
+	}
+
+	dc.d4OtherClnt, err = nclient4.NewWithConn(rudpconn, dc.d4Lease.Lease.ACK.ClientHWAddr, clntModList...)
 	if err != nil {
 		return fmt.Errorf("failed to create dhcpv4 release client for %v,%v", dc.id, err)
 	}
 	return nil
 }
 
-func (dc *DClient) createV6ReleaseClnt() error {
+func (dc *DClient) createV6OtherClnt() error {
 	if dc.d6Lease == nil {
 		return fmt.Errorf("can't create v6 release client for %v without v6 lease", dc.id)
 	}
@@ -110,14 +139,15 @@ func (dc *DClient) createV6ReleaseClnt() error {
 	if err != nil {
 		return fmt.Errorf("failed to create raw udp conn for %v release, %w", dc.id, err)
 	}
-	dc.d6ReleaseClnt, err = nclient6.NewWithConn(rudpconn, dc.d6Lease.MAC)
+	dc.d6OtherClnt, err = nclient6.NewWithConn(rudpconn, dc.d6Lease.MAC)
 	if err != nil {
 		return fmt.Errorf("failed to create dhcp6 client %v for release, %w", dc.id, err)
 	}
 	return nil
 }
 
-func (dc *DClient) releaseAll(wg *sync.WaitGroup) {
+// threeRAll means release, renew and rebind
+func (dc *DClient) threeRAll(ctx context.Context, wg *sync.WaitGroup, act actionType) {
 
 	var err error
 	if wg != nil {
@@ -138,56 +168,76 @@ func (dc *DClient) releaseAll(wg *sync.WaitGroup) {
 
 	//create release clients
 	if dc.d4Lease != nil && dc.cfg.setup.EnableV4 {
-		err = dc.createV4ReleaseClnt()
+		err = dc.createV4OtherClnt(act)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 	if dc.d6Lease != nil && dc.cfg.setup.EnableV6 {
-		err = dc.createV6ReleaseClnt()
+		err = dc.createV6OtherClnt()
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 	if dc.cfg.setup.StackDelay >= 0 {
 		//do v4 first
-		if dc.d4ReleaseClnt != nil {
+		if dc.d4OtherClnt != nil {
 			subwg.Add(1)
 			go func() {
-				err = dc.releasev4(subwg)
+				switch act {
+				case actionRelease:
+					err = dc.releasev4(subwg)
+				case actionRenew, actionRebind:
+					err = dc.renewOrRebindv4(ctx, subwg, act)
+
+				}
 				if err != nil {
-					common.MyLog("failed to release DHCPv4, %v", err)
+					common.MyLog("failed to %v DHCPv4, %v", act, err)
 				}
 			}()
 		}
 		time.Sleep(dc.cfg.setup.StackDelay)
-		if dc.d6ReleaseClnt != nil {
+		if dc.d6OtherClnt != nil {
 			subwg.Add(1)
 			go func() {
-				err = dc.releasev6(subwg)
+				mtype := dhcpv6.MessageTypeRelease
+				if act == actionRenew {
+					mtype = dhcpv6.MessageTypeRenew
+				}
+				err = dc.releaseOrRenewV6(subwg, mtype)
 				if err != nil {
-					common.MyLog("failed to release DHCPv6, %v", err)
+					common.MyLog("failed to %v DHCPv6, %v", act, err)
 				}
 			}()
 		}
 	} else {
 		//do v6 first
-		if dc.d6ReleaseClnt != nil {
+		if dc.d6OtherClnt != nil {
 			subwg.Add(1)
 			go func() {
-				err = dc.releasev6(subwg)
+				mtype := dhcpv6.MessageTypeRelease
+				if act == actionRenew {
+					mtype = dhcpv6.MessageTypeRenew
+				}
+				err = dc.releaseOrRenewV6(subwg, mtype)
 				if err != nil {
-					common.MyLog("failed to release DHCPv6, %v", err)
+					common.MyLog("failed to %v DHCPv6, %v", act, err)
 				}
 			}()
 		}
 		time.Sleep(-1 * dc.cfg.setup.StackDelay)
-		if dc.d4ReleaseClnt != nil {
+		if dc.d4OtherClnt != nil {
 			subwg.Add(1)
 			go func() {
-				err = dc.releasev4(subwg)
+				switch act {
+				case actionRelease:
+					err = dc.releasev4(subwg)
+				case actionRenew, actionRebind:
+					err = dc.renewOrRebindv4(ctx, subwg, act)
+
+				}
 				if err != nil {
-					common.MyLog("failed to release DHCPv4, %v", err)
+					common.MyLog("failed to %v DHCPv4, %v", act, err)
 				}
 			}()
 		}
@@ -449,6 +499,7 @@ func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
 	for _, op := range dc.cfg.V4Options {
 		dhcpModList = append(dhcpModList, dhcpv4.WithOption(op))
 	}
+	dhcpModList = append(dhcpModList, dhcpv4.WithGatewayIP(dc.cfg.setup.GiAddr.AsSlice()))
 	result.StartTime = time.Now()
 	result.IsDHCPv6 = false
 	lease, err := dc.d4.Request(context.Background(), dhcpModList...)
@@ -490,6 +541,44 @@ func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
 	return nil
 }
 
+func (dc *DClient) renewOrRebindv4(ctx context.Context, wg *sync.WaitGroup, act actionType) error {
+	common.MyLog("%v v4 for %v", act, dc.id)
+	if wg != nil {
+		defer wg.Done()
+	}
+	if dc.d4Lease == nil {
+		return nil
+	}
+	modList := []dhcpv4.Modifier{}
+	for t := range dc.d4Lease.IDOptions {
+		modList = append(modList,
+			dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.GenericOptionCode(t),
+				dc.d4Lease.IDOptions.Get(dhcpv4.GenericOptionCode(t)))))
+	}
+	modList = append(modList, dhcpv4.WithRelay(dc.cfg.setup.GiAddr.AsSlice()))
+	dl := nclient4.Lease(*dc.d4Lease.Lease)
+	_, err := dc.d4OtherClnt.Renew(ctx, &dl, modList...)
+	result := new(dialResult)
+	result.StartTime = time.Now()
+	result.ExecResult = resultSuccess
+	if err != nil {
+		result.ExecResult = resultFailure
+	}
+	result.action = act
+	result.IsDHCPv6 = false
+	result.L2EP = dc.id
+	defer func() {
+		result.FinishTime = time.Now()
+		dc.dialResultCh <- result
+	}()
+	if err != nil {
+		result.ExecResult = resultFailure
+		return fmt.Errorf("failed to release v4 lease for clnt %v, %v", dc.id, err)
+	}
+	return nil
+
+}
+
 func (dc *DClient) releasev4(wg *sync.WaitGroup) error {
 	common.MyLog("releasing v4 for %v", dc.id)
 	if wg != nil {
@@ -507,7 +596,7 @@ func (dc *DClient) releasev4(wg *sync.WaitGroup) error {
 	var err error
 	for i := 0; i < 3; i++ {
 		dl := nclient4.Lease(*dc.d4Lease.Lease)
-		err = dc.d4ReleaseClnt.Release(&dl, modList...)
+		err = dc.d4OtherClnt.Release(&dl, modList...)
 		if err == nil {
 			break
 		}
@@ -532,7 +621,7 @@ func (dc *DClient) releasev4(wg *sync.WaitGroup) error {
 	return nil
 }
 
-func (dc *DClient) releasev6(wg *sync.WaitGroup) error {
+func (dc *DClient) releaseOrRenewV6(wg *sync.WaitGroup, mt dhcpv6.MessageType) error {
 	common.MyLog("releasing v6 for %v", dc.id)
 	if wg != nil {
 		defer wg.Done()
@@ -550,12 +639,12 @@ func (dc *DClient) releasev6(wg *sync.WaitGroup) error {
 		result.FinishTime = time.Now()
 		dc.dialResultCh <- result
 	}()
-	releaseMsg, err := dc.d6Lease.Genv6Release()
+	releaseMsg, err := dc.d6Lease.Genv6Release(mt)
 	if err != nil {
 		return fmt.Errorf("failed to create v6 release msg for clnt %v, %v", dc.id, err)
 	}
 	for i := 0; i < 3; i++ {
-		_, err = dc.d6ReleaseClnt.SendAndRead(context.Background(),
+		_, err = dc.d6OtherClnt.SendAndRead(context.Background(),
 			nclient6.AllDHCPRelayAgentsAndServers, releaseMsg,
 			nclient6.IsMessageType(dhcpv6.MessageTypeReply))
 		if err == nil {
@@ -585,7 +674,7 @@ func NewSched(setup *testSetup) (*Sched, error) {
 	r.ClntList = make(map[clientID]*DClient)
 	r.summary = newResultSummary(setup)
 	r.dialResultCh = make(chan *dialResult, dialResultChanLen)
-	if setup.Action == actionRelease {
+	if setup.Action != actionDORA {
 		saveLeases, err := loadLeaseFromFile(setup.LeaseFile)
 		if err != nil {
 			log.Fatal(err)
@@ -717,6 +806,10 @@ func (sch *Sched) collectResults(wg *sync.WaitGroup) {
 		switch r.action {
 		case actionRelease:
 			sch.summary.Released++
+		case actionRebind:
+			sch.summary.Rebinded++
+		case actionRenew:
+			sch.summary.Renewed++
 
 		}
 		switch r.ExecResult {
@@ -760,15 +853,16 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 	switch sch.setup.Action {
 	default:
 		log.Fatal("invalid action", sch.setup.Action)
-	case actionRelease:
-		releaseWG := new(sync.WaitGroup)
+
+	case actionRelease, actionRenew, actionRebind:
+		threeRWG := new(sync.WaitGroup)
 		for _, c := range sch.ClntList {
-			releaseWG.Add(1)
-			go c.releaseAll(releaseWG)
+			threeRWG.Add(1)
+			go c.threeRAll(ctx, threeRWG, sch.setup.Action)
 			time.Sleep(sch.setup.Interval)
 		}
-		releaseWG.Wait()
-		fmt.Printf("\nrelease resutls are:\n%v", sch.summary)
+		threeRWG.Wait()
+		fmt.Printf("\n%v resutls are:\n%v", sch.setup.Action, sch.summary)
 	case actionDORA:
 		//save lease
 		var savectx context.Context
@@ -800,15 +894,15 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 		if sch.setup.Flapping != nil {
 			if sch.setup.Flapping.FlapNum > 0 {
 				for _, cc := range sch.ClntList {
-					if cc.d4ReleaseClnt == nil && cc.d4Lease != nil {
-						err = cc.createV4ReleaseClnt()
+					if cc.d4OtherClnt == nil && cc.d4Lease != nil {
+						err = cc.createV4OtherClnt(actionRelease)
 						if err != nil {
 							common.MyLog("%v", err)
 							return
 						}
 					}
-					if cc.d6ReleaseClnt == nil && cc.d6Lease != nil {
-						err = cc.createV6ReleaseClnt()
+					if cc.d6OtherClnt == nil && cc.d6Lease != nil {
+						err = cc.createV6OtherClnt()
 						if err != nil {
 							common.MyLog("%v", err)
 							return
@@ -843,7 +937,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 						default:
 						}
 						if dc.d6Lease != nil {
-							err = dc.releasev6(nil)
+							err = dc.releaseOrRenewV6(nil, dhcpv6.MessageTypeRelease)
 							if err != nil {
 								common.MyLog("%v", err)
 							}

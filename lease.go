@@ -198,12 +198,12 @@ func (lease *v6Lease) addrStr() (r []string) {
 	return
 }
 
-func (lease *v6Lease) Genv6Release() (*dhcpv6.Message, error) {
+func (lease *v6Lease) Genv6Release(mt dhcpv6.MessageType) (*dhcpv6.Message, error) {
 	msg, err := dhcpv6.NewMessage()
 	if err != nil {
 		return nil, err
 	}
-	msg.MessageType = dhcpv6.MessageTypeRelease
+	msg.MessageType = mt
 	msg.AddOption(lease.ReplyOptions.GetOne(dhcpv6.OptionClientID))
 	msg.AddOption(lease.ReplyOptions.GetOne(dhcpv6.OptionServerID))
 	msg.AddOption(dhcpv6.OptElapsedTime(0))

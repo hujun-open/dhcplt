@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ type testSetup struct {
 	ApplyLease     bool           `usage:"apply assigned address on the interface if true"`
 	Retry          uint           `usage:"number of setup retry"`
 	Timeout        time.Duration  `usage:"setup timout"`
+	GiAddr         netip.Addr     `usage:"Gi address for DHCPv4"`
 	//following are template str, $ID will be replaced by client id
 	RID         string `usage:"BBF remote-id"`
 	CID         string `usage:"BBF circuit-id"`
@@ -57,7 +59,7 @@ type testSetup struct {
 	SendRSFirst bool                `usage:"send Router Solict first if true"`
 	Profiling   bool                `usage:"enable profiling, dev use only"`
 	LeaseFile   string
-	Action      actionType `usage:"dora | release"`
+	Action      actionType `usage:"dora | release | renew | rebind"`
 	saveV4Chan  chan *v4LeaseWithID
 	saveV6Chan  chan *v6LeaseWithID
 }
@@ -71,6 +73,7 @@ func newDefaultConf() *testSetup {
 		VLANEType:    etherconn.DefaultVLANEtype,
 		VLANStep:     1,
 		Interval:     time.Second,
+		GiAddr:       netip.MustParseAddr("0.0.0.0"),
 		Retry:        1,
 		Timeout:      5 * time.Second,
 		EnableV4:     true,
@@ -122,6 +125,15 @@ func (setup *testSetup) init() error {
 	}
 	for _, v := range setup.StartVLANs {
 		v.EtherType = uint16(setup.VLANEType)
+	}
+	if setup.GiAddr.IsValid() {
+		if !setup.GiAddr.IsUnspecified() {
+			if !setup.GiAddr.Is4() || !setup.GiAddr.IsGlobalUnicast() {
+				return fmt.Errorf("gi address must be an IPv4 unicast addr")
+			}
+		}
+	} else {
+		setup.GiAddr = netip.MustParseAddr("0.0.0.0")
 	}
 	setup.ExcludedVLANs = []uint16{}
 	for _, n := range setup.ExcludedVLANs {

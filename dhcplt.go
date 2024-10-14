@@ -56,6 +56,8 @@ type resultSummary struct {
 	Success        int
 	Failed         int
 	Released       int
+	Renewed        int
+	Rebinded       int
 	LessThanSecond int
 	Shortest       time.Duration
 	Longest        time.Duration
@@ -78,6 +80,8 @@ func (rs resultSummary) String() string {
 	r += fmt.Sprintf("total trans: %d\n", rs.Total)
 	r += fmt.Sprintf("Success dial:%d\n", rs.Success)
 	r += fmt.Sprintf("Success release:%d\n", rs.Released)
+	r += fmt.Sprintf("Success renew:%d\n", rs.Renewed)
+	r += fmt.Sprintf("Success rebind:%d\n", rs.Rebinded)
 	r += fmt.Sprintf("Failed trans:%d\n", rs.Failed)
 	r += fmt.Sprintf("Duration:%v\n", rs.TotalTime)
 	r += fmt.Sprintf("Interval:%v\n", rs.setup.Interval)
@@ -132,7 +136,7 @@ const (
 	ENG_XDP   = etherconn.RelayTypeXDP
 )
 
-var VERSION string
+var VERSION string = "unversioned"
 
 func handleCtrlC(c chan os.Signal, cf context.CancelFunc) {
 	<-c
@@ -145,7 +149,7 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	cnf, err := shouchan.NewSConf(newDefaultConf(), "dhcplt",
-		"a DHCP load tester", shouchan.WithDefaultConfigFilePath[*testSetup]("dhcplt.conf"))
+		fmt.Sprintf("a DHCP load tester, %v", VERSION), shouchan.WithDefaultConfigFilePath[*testSetup]("dhcplt.conf"))
 	if err != nil {
 		panic(err)
 	}

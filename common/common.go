@@ -16,5 +16,5 @@ func MyLog(format string, a ...interface{}) {
 	}
 	msg := fmt.Sprintf(format, a...)
 	_, fname, linenum, _ := runtime.Caller(1)
-	Logger.Print(fmt.Sprintf("%v:%v:%v", filepath.Base(fname), linenum, msg))
+	Logger.Printf("%v:%v:%v", filepath.Base(fname), linenum, msg)
 }

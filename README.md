@@ -7,16 +7,17 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 
 - DHCPv4
 
-      - Support DORA and Release
+      - Support DORA, Release, Renew and Rebind
       - Following DHCPv4 options could be included in request:
             - Client Id
             - Vendor Class
             - Option82 Circuit-Id
             - Option82 Remote-Id
+            - Gi Addr
             - Custom option
 - DHCPv6:
 
-      - Support DORA and Release
+      - Support DORA Release, Renew and Rebind
       - Request for IA_NA and/or IA_PD prefix
       - Send request in relay-forward message to simulate a relayed message, and handle the relay-reply message
       - following DHCPv6 options could be included in request:
@@ -28,7 +29,12 @@ dhcplt is a DHCPv4/DHCPv6 load tester for Linux with following features:
 - performant: test shows that it could do 4k DORA per sec on a single core VM
 
 ## Usage Example
-**Note: using dhcplt requires root privilege**
+Notes: 
+
+- **using dhcplt requires root privilege**
+- action release, renew and rebind require a previous saved lease file
+
+
 
 1. 10000 DHCPv4 clients doing DORA on interface eth1, no VLAN, starting MAC address is the eth1 interface mac, increase by 1 for each client
 ```
@@ -95,6 +101,11 @@ dhcplt -i eth1 -action release
 dhcplt -i eth1 -action release -v6
 ```
 
+16. using saved lease file to send renew msg, only send renew for all dhcpv4 leases in the lease file
+```
+dhcplt -i eth1 -action renew 
+```
+
 ## DORA Result Summary
 With action DORA, dhcplt will display a summary of results after it s done like following:
 ```
@@ -121,8 +132,8 @@ Avg dial success time:135.940204ms
 ## Command Line Parameters
 
 ```
-a DHCP load tester
-  - action: dora | release
+a DHCP load tester, v0.7.0
+  - action: dora | release | renew | rebind
         default:dora
   - applylease: apply assigned address on the interface if true
         default:false
@@ -143,10 +154,12 @@ a DHCP load tester
         default:0
   - flapstaydowndur: duriation of stay down
         default:10s
+  - giaddr: Gi address for DHCPv4
+        default:0.0.0.0
   - i: interface name
   - interval: interval between setup of sessions
         default:1s
-  - leasefile:
+  - leasefile: 
         default:dhcplt.lease
   - mac: starting MAC address
   - macstep: amount of increase between two consecutive MAC address
@@ -185,8 +198,7 @@ a DHCP load tester
 
   -cfgfromfile: load configuration from the specified file
         default:dhcplt.conf
-
-
+        
 ```
 - interval: this is wait interval between launch client DORA
 - all duration type could use syntax that can be parsed by GOlang flag.Duration, like "1s", "1ms"
