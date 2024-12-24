@@ -45,7 +45,7 @@ type testSetup struct {
 	SourceV6Port   uint16         `usage:"source port for egress DHCPv6 message" alias:"srcv6port"`
 	SourceV4Port   uint16         `usage:"source port for egress DHCPv4 message" alias:"srcv4port"`
 	//following are template str, $ID will be replaced by client id
-	RID         string `usage:"BBF remote-id"`
+	RID         string `usage:"BBF remote-id" `
 	CID         string `usage:"BBF circuit-id"`
 	ClntID      string `usage:"client-id"`
 	VendorClass string `usage:"vendor class"`
@@ -54,7 +54,7 @@ type testSetup struct {
 	EnableV6     bool               `alias:"v6" usage:"do DHCPv6 if true"`
 	SourceV6Addr netip.Addr         `usage:"source address for DHCPv6" alias:"srcv6"`
 	StackDelay   time.Duration      `usage:"delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first"`
-	V6MsgType    dhcpv6.MessageType `usage:"DHCPv6 exchange type, solict|relay|auto"`
+	V6MsgType    dhcpv6.MessageType `usage:"DHCPv6 exchange type, solict|relay|auto" `
 	NeedNA       bool               `usage:"request DHCPv6 IANA if true"`
 	NeedPD       bool               `usage:"request DHCPv6 IAPD if true"`
 	pktRelay     etherconn.PacketRelay
@@ -119,13 +119,17 @@ func (setup *testSetup) init() error {
 	if setup.NumOfClients <= 0 {
 		return fmt.Errorf("number of clients can't be zero")
 	}
-	iff, err := net.InterfaceByName(setup.Ifname)
+	var iff *net.Interface
+	var err error
+
+	iff, err = net.InterfaceByName(setup.Ifname)
 	if err != nil {
 		return fmt.Errorf("can't find interface %v,%w", setup.Ifname, err)
 	}
 	if len(setup.StartMAC) == 0 {
 		setup.StartMAC = iff.HardwareAddr
 	}
+
 	if !setup.EnableV4 && !setup.EnableV6 {
 		return fmt.Errorf("both DHCPv4 and DHCPv6 are disabled")
 	}
@@ -196,6 +200,7 @@ func (setup *testSetup) init() error {
 			setup.V6MsgType = dhcpv6.MessageTypeSolicit
 		}
 	}
+
 	setup.pktRelay, err = createPktRelay(setup)
 	if err != nil {
 		return err
@@ -265,11 +270,18 @@ func d4OptionFromStr(text string) (any, error) {
 }
 
 func d4OptionToStr(in any) (string, error) {
+	if in == nil {
+		return "", nil
+	}
 	v := in.(dhcpv4.Option)
 	if v.Code == nil {
 		return "", nil
 	}
-	return fmt.Sprintf("%d:%v", v.Code.Code(), v.Value.String()), nil
+	vals := ""
+	if v.Value != nil {
+		vals = v.Value.String()
+	}
+	return fmt.Sprintf("%d:%v", v.Code.Code(), vals), nil
 }
 
 func d6OptionFromStr(text string) (any, error) {

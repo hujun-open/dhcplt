@@ -7,6 +7,7 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/hujun-open/cmprule v0.3.1
 	github.com/hujun-open/etherconn v0.9.0
+	github.com/hujun-open/extyaml v0.5.3
 	github.com/hujun-open/myaddr v0.1.3
 	github.com/hujun-open/shouchan v0.3.5
 	github.com/insomniacslk/dhcp v0.0.0-20240829085014-a3a4c1f04475
@@ -14,11 +15,11 @@ require (
 )
 
 // replace github.com/hujun-open/etherconn => ../etherconn
+// replace github.com/hujun-open/extyaml => ../extyaml
 
 require (
 	github.com/asavie/xdp v0.3.4-0.20211113171712-711132ccc429 // indirect
 	github.com/cilium/ebpf v0.4.0 // indirect
-	github.com/hujun-open/extyaml v0.4.0 // indirect
 	github.com/hujun-open/myflags v0.3.2 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/mdlayher/packet v1.1.2 // indirect

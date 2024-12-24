@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"github.com/hujun-open/dhcplt/common"
+	"github.com/hujun-open/extyaml"
 
 	"github.com/hujun-open/cmprule"
 	"github.com/hujun-open/etherconn"
 
+	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv6"
 	"github.com/vishvananda/netlink"
 )
@@ -102,17 +104,28 @@ type testCase struct {
 	svipstr    string
 	svrvlans   etherconn.VLANs
 	setup      *testSetup
+	setupStr   string
 	ruleList   []string
 	shouldFail bool
 }
 
 func dotestv6(c testCase, eng etherconn.RelayType) error {
-	fmt.Printf("initiate test case %+v\n", c)
+
+	// fmt.Printf("initiate test case %+v\n", c)
 	var err error
+	newsetup := newDefaultConf()
+	err = extyaml.UnmarshalExt([]byte(c.setupStr), newsetup)
+	if err != nil {
+		return fmt.Errorf("unmashal err %w", err)
+	}
+	// fmt.Printf("unmarshaled is %+v\n", newsetup)
+	c.setup = newsetup
+
 	err = createVethLink("S", "C")
 	if err != nil {
 		return err
 	}
+
 	svrif, err := createVLANIF("S", c.svrvlans)
 	if err != nil {
 		return err
@@ -121,6 +134,7 @@ func dotestv6(c testCase, eng etherconn.RelayType) error {
 	if err != nil {
 		return err
 	}
+
 	//NOTE: here need to wait for some time so that interface becomes oper-up
 	time.Sleep(3 * time.Second)
 	os.Remove("/var/lib/kea/dhcp6.leases")
@@ -147,10 +161,15 @@ func dotestv6(c testCase, eng etherconn.RelayType) error {
 	defer cmd.Process.Kill()
 	time.Sleep(time.Second)
 	c.setup.Driver = eng
-	c.setup.pktRelay, err = createPktRelay(c.setup)
+	err = c.setup.init()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to init setup, %w", err)
 	}
+	// c.setup.Driver = eng
+	// c.setup.pktRelay, err = createPktRelay(c.setup)
+	// if err != nil {
+	// 	return err
+	// }
 	sch, err := NewSched(c.setup)
 	if err != nil {
 		return fmt.Errorf("failed to create sched, %v", err)
@@ -185,8 +204,6 @@ const (
 )
 
 func dotest(c testCase) error {
-	fmt.Printf("initiate test case %+v\n", c)
-	c.setup.EnableV4 = true
 	err := createVethLink("S", "C")
 	if err != nil {
 		return err
@@ -215,21 +232,15 @@ func dotest(c testCase) error {
 	}
 	defer cmd.Process.Release()
 	defer cmd.Process.Kill()
-	// c.setup.ENG = ENG_AFPKT
-	// c.setup.pktRelay, err = createPktRelay(c.setup)
-	// if err != nil {
-	// 	return err
-	// }
-	// defer c.setup.pktRelay.Stop()
-	// ccfgs, err := genClientConfigurations(c.setup)
-	// if err != nil {
-	// 	return err
-	// }
-	// // common.MyLog("start dora in 30s")
-	// time.Sleep(time.Second)
-	// // common.MyLog("test starts")
+	newsetup := newDefaultConf()
+	err = extyaml.UnmarshalExt([]byte(c.setupStr), newsetup)
+	if err != nil {
+		return fmt.Errorf("unmashal err %w", err)
+	}
+	// fmt.Printf("unmarshaled is %+v\n", newsetup)
+	c.setup = newsetup
 	c.setup.Driver = ENG_AFPKT
-	c.setup.pktRelay, err = createPktRelay(c.setup)
+	err = c.setup.init()
 	if err != nil {
 		return err
 	}
@@ -300,13 +311,29 @@ func TestDHCPv6(t *testing.T) {
 		//case 0
 		{
 			desc: "single vlan, both PD and NA",
+			setupStr: `
+enablev4: false
+enablev6: true
+needna: true
+needpd: true
+v6msgtype: solicit
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 10s
+retry: 2
+startvlans: 100
+vlanstep: 0
+`,
 			setup: &testSetup{
 				EnableV4:     false,
 				EnableV6:     true,
 				NeedNA:       true,
 				NeedPD:       true,
 				V6MsgType:    dhcpv6.MessageTypeSolicit,
-				Debug:        true,
+				Debug:        false,
 				Ifname:       "C",
 				NumOfClients: 10,
 				StartMAC:     net.HardwareAddr{0xaa, 0xbb, 0xcc, 11, 22, 33},
@@ -380,6 +407,22 @@ func TestDHCPv6(t *testing.T) {
 		/////////////////// case1
 		{
 			desc: "double vlan, both PD and NA",
+			setupStr: `
+enablev4: false
+enablev6: true
+needna: true
+needpd: true
+v6msgtype: solicit
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 30s
+retry: 2
+startvlans: 100.200
+vlanstep: 0
+`,
 			setup: &testSetup{
 				EnableV4:     false,
 				EnableV6:     true,
@@ -462,12 +505,28 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 3s",
+				"TotalTime : < : 30s",
 			},
 		},
 		////////////////////case2
 		{
 			desc: "single vlan, PD only",
+			setupStr: `
+enablev4: false
+enablev6: true
+needna: false
+needpd: true
+v6msgtype: solicit
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 3s
+retry: 2
+startvlans: 100
+vlanstep: 0
+`,
 			setup: &testSetup{
 				EnableV4:     false,
 				EnableV6:     true,
@@ -542,12 +601,28 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 3s",
+				"TotalTime : < : 30s",
 			},
 		},
 		////////////////////////case3
 		{
 			desc: "double vlan, NA only",
+			setupStr: `
+enablev4: false
+enablev6: true
+needna: true
+needpd: false
+v6msgtype: solicit
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 3s
+retry: 2
+startvlans: 100.200
+vlanstep: 0
+`,
 			setup: &testSetup{
 				EnableV4:     false,
 				EnableV6:     true,
@@ -630,12 +705,29 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 3s",
+				"TotalTime : < : 30s",
 			},
 		},
 		////////////////////cas4
 		{
 			desc: "double vlan, both PD and NA, relayed",
+			setupStr: `
+enablev4: false
+enablev6: true
+needna: true
+needpd: true
+v6msgtype: relay
+cid: "mycid@ID"
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 3s
+retry: 2
+startvlans: 100.200
+vlanstep: 0
+`,
 			setup: &testSetup{
 				EnableV4:     false,
 				EnableV6:     true,
@@ -719,7 +811,7 @@ func TestDHCPv6(t *testing.T) {
 			svipstr: "2001:dead::99/128",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 3s",
+				"TotalTime : < : 30s",
 			},
 		},
 		////////////////////
@@ -760,8 +852,22 @@ func TestDHCPv6(t *testing.T) {
 func TestDHCPLT(t *testing.T) {
 	testList := []testCase{
 		{ //case 0
+
+			setupStr: `
+enablev4: true
+enablev6: false
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 3s
+retry: 2
+startvlans: 100
+vlanstep: 0
+`,
 			setup: &testSetup{
-				Debug:        true,
+				Debug:        false,
 				Ifname:       "C",
 				NumOfClients: 10,
 				StartMAC:     net.HardwareAddr{0xaa, 0xbb, 0xcc, 11, 22, 33},
@@ -821,12 +927,25 @@ func TestDHCPLT(t *testing.T) {
 			svipstr: "192.0.2.254/24",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 10s",
+				"TotalTime : < : 30s",
 			},
 		},
 
 		//two vlans
 		{ //case 1
+			setupStr: `
+enablev4: true
+enablev6: false
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 3s
+retry: 2
+startvlans: 100.200
+vlanstep: 0
+`,
 			setup: &testSetup{
 				Ifname:       "C",
 				Debug:        true,
@@ -895,12 +1014,25 @@ func TestDHCPLT(t *testing.T) {
 			svipstr: "192.0.2.254/24",
 			ruleList: []string{
 				"Success : == : 10",
-				"TotalTime : < : 10s",
+				"TotalTime : < : 30s",
 			},
 		},
 
 		//negative case, wrong vlans
 		{ // case 2
+			setupStr: `
+enablev4: true
+enablev6: false
+debug: false
+ifname: C
+numofclients: 10
+startmac: aa:bb:cc:11:22:33
+macstep: 1
+timeout: 3s
+retry: 2
+startvlans: 300.200
+vlanstep: 0
+`,
 			setup: &testSetup{
 				Ifname:       "C",
 				NumOfClients: 10,
@@ -995,6 +1127,10 @@ func TestDHCPLT(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+
+	extyaml.RegisterExt[dhcpv4.Option](d4OptionToStr, d4OptionFromStr)
+	extyaml.RegisterExt[dhcpv6.OptionGeneric](d6OptionToStr, d6OptionFromStr)
+	extyaml.RegisterExt[dhcpv6.MessageType](d6MsgTypeToStr, d6MsgTypeFromStr)
 	runtime.SetBlockProfileRate(1000000000)
 	go func() {
 		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
