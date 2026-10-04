@@ -5,7 +5,6 @@ go 1.26.0
 require (
 	github.com/RobinUS2/golang-moving-average v1.0.0
 	github.com/google/gopacket v1.1.19
-	github.com/hujun-open/cmprule v0.3.1
 	github.com/hujun-open/completers v0.0.2
 	github.com/hujun-open/etherconn v0.9.0
 	github.com/hujun-open/extyaml v0.5.3
