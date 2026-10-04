@@ -107,6 +107,40 @@ type testSetup struct {
 
 	saveV4Chan chan *v4LeaseWithID
 	saveV6Chan chan *v6LeaseWithID
+
+	// following are test seams, nil in normal operation
+	relayFactory   relayFactoryFunc
+	clientFactory  dclientFactoryFunc
+	leaseStoreImpl leaseStore
+}
+
+// relayFactoryFunc builds the PacketRelay used by a testSetup. createPktRelay
+// is the production implementation; tests can inject an in-memory relay.
+type relayFactoryFunc func(setup *testSetup) (etherconn.PacketRelay, error)
+
+// dclientFactoryFunc lets tests build the Sched's clients without touching the
+// network. leases is nil for the DORA action and the loaded lease map otherwise.
+type dclientFactoryFunc func(setup *testSetup, leases exportLeaseMap, resultCh chan<- *dialResult) (map[clientID]dclient, error)
+
+// getLeaseStore returns the configured lease store, defaulting to a file-backed
+// store at LeaseFile.
+func (setup *testSetup) getLeaseStore() leaseStore {
+	if setup.leaseStoreImpl != nil {
+		return setup.leaseStoreImpl
+	}
+	return &fileLeaseStore{path: setup.LeaseFile}
+}
+
+// createRelay builds the PacketRelay. An already-set pktRelay wins; otherwise
+// the injected relayFactory is used, falling back to createPktRelay.
+func (setup *testSetup) createRelay() (etherconn.PacketRelay, error) {
+	if setup.pktRelay != nil {
+		return setup.pktRelay, nil
+	}
+	if setup.relayFactory != nil {
+		return setup.relayFactory(setup)
+	}
+	return createPktRelay(setup)
 }
 
 func newDefaultConf() *testSetup {
@@ -247,7 +281,7 @@ func (setup *testSetup) init(action actionType) error {
 		}
 	}
 
-	setup.pktRelay, err = createPktRelay(setup)
+	setup.pktRelay, err = setup.createRelay()
 	if err != nil {
 		return err
 	}

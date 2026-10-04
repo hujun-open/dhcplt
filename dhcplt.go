@@ -170,7 +170,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = filler.Command.RegisterFlagCompletionFunc("ifname", completers.InterfaceNameCompletion)
+	err = filler.Command.RegisterFlagCompletionFunc("ifname", completers.InterfaceNameCompler)
 	if err != nil {
 		log.Fatal(err)
 	}

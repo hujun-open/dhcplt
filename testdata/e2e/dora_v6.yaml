@@ -1,0 +1,18 @@
+# E2E DHCPv6 DORA config used by e2e_test.go. The client runs on interface "C"
+# of a veth pair (peer "S" hosts the in-process DHCPv6 server).
+ifname: C
+driver: afpkt
+enablev4: false
+enablev6: true
+v6msgtype: solicit
+interval: 0s
+timeout: 3s
+retry: 2
+dora:
+  numofclients: 4
+  startmac: aa:bb:cc:11:22:33
+  macstep: 1
+  startvlans: 100
+  vlanstep: 0
+  needna: true
+  needpd: true

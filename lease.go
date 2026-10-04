@@ -43,6 +43,10 @@ func (el *exportV4Lease) setLease(l *v4Lease) error {
 	if l.Lease == nil {
 		l.Lease = new(myDHCPv4Lease)
 	}
+	// FromBytes writes into the map, so it must not be nil.
+	if l.IDOptions == nil {
+		l.IDOptions = make(dhcpv4.Options)
+	}
 	if err = l.Lease.UnmarshalBinary(el.Lease); err != nil {
 		return err
 	}
@@ -321,4 +325,26 @@ func loadLeaseFromFile(inf string) (savedMap exportLeaseMap, err error) {
 		return nil, fmt.Errorf("failed to decode, %w", err)
 	}
 	return
+}
+
+// leaseStore persists and restores leases. The production implementation is
+// file-backed; tests can inject an in-memory store.
+type leaseStore interface {
+	// load restores all saved leases.
+	load() (exportLeaseMap, error)
+	// save consumes leases from the channels until ctx is done, then persists
+	// them. It calls wg.Done when finished.
+	save(ctx context.Context, wg *sync.WaitGroup, v4chan chan *v4LeaseWithID, v6chan chan *v6LeaseWithID)
+}
+
+type fileLeaseStore struct {
+	path string
+}
+
+func (s *fileLeaseStore) load() (exportLeaseMap, error) {
+	return loadLeaseFromFile(s.path)
+}
+
+func (s *fileLeaseStore) save(ctx context.Context, wg *sync.WaitGroup, v4chan chan *v4LeaseWithID, v6chan chan *v6LeaseWithID) {
+	saveLeaseToFiles(ctx, wg, v4chan, v6chan, s.path)
 }

@@ -99,6 +99,29 @@ type DClient struct {
 	// saveLeaseCh  chan interface{}
 }
 
+// hasV4Lease/hasV6Lease and hasV4OtherClnt/hasV6OtherClnt expose lease state
+// that Sched needs without leaking DClient internals.
+func (dc *DClient) hasV4Lease() bool     { return dc.d4Lease != nil }
+func (dc *DClient) hasV6Lease() bool     { return dc.d6Lease != nil }
+func (dc *DClient) hasV4OtherClnt() bool { return dc.d4OtherClnt != nil }
+func (dc *DClient) hasV6OtherClnt() bool { return dc.d6OtherClnt != nil }
+
+// dclient is the per-client behavior Sched orchestrates. *DClient is the
+// production implementation; tests can inject a fake via
+// testSetup.clientFactory.
+type dclient interface {
+	dialAll(wg *sync.WaitGroup)
+	threeRAll(ctx context.Context, wg *sync.WaitGroup, act actionType)
+	createV4OtherClnt(act actionType) error
+	createV6OtherClnt() error
+	releasev4(wg *sync.WaitGroup) error
+	releaseOrRenewV6(wg *sync.WaitGroup, mt dhcpv6.MessageType) error
+	hasV4Lease() bool
+	hasV6Lease() bool
+	hasV4OtherClnt() bool
+	hasV6OtherClnt() bool
+}
+
 func (dc *DClient) createV4OtherClnt(act actionType) error {
 	if dc.d4Lease == nil {
 		return fmt.Errorf("can't create v4 release client for %v without v4 lease", dc.id)
@@ -695,9 +718,10 @@ func (dc *DClient) releaseOrRenewV6(wg *sync.WaitGroup, mt dhcpv6.MessageType) e
 }
 
 type Sched struct {
-	ClntList     map[clientID]*DClient
+	ClntList     map[clientID]dclient
 	dialResultCh chan *dialResult
 	summary      *resultSummary
+	summaryMu    sync.Mutex
 	setup        *testSetup
 }
 
@@ -708,11 +732,32 @@ const (
 func NewSched(setup *testSetup, action actionType) (*Sched, error) {
 	r := new(Sched)
 	r.setup = setup
-	r.ClntList = make(map[clientID]*DClient)
+	r.ClntList = make(map[clientID]dclient)
 	r.summary = newResultSummary(setup)
 	r.dialResultCh = make(chan *dialResult, dialResultChanLen)
+
+	// test seam: build clients without touching the network
+	if setup.clientFactory != nil {
+		var leases exportLeaseMap
+		if action != actionDORA {
+			loaded, err := setup.getLeaseStore().load()
+			if err != nil {
+				return nil, err
+			}
+			leases = loaded
+		}
+		clients, err := setup.clientFactory(setup, leases, r.dialResultCh)
+		if err != nil {
+			return nil, err
+		}
+		if clients != nil {
+			r.ClntList = clients
+		}
+		return r, nil
+	}
+
 	if action != actionDORA {
-		saveLeases, err := loadLeaseFromFile(setup.LeaseFile)
+		saveLeases, err := setup.getLeaseStore().load()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -857,6 +902,7 @@ func (sch *Sched) collectResults(wg *sync.WaitGroup) {
 		if r.StartTime.Before(beginTime) {
 			beginTime = r.StartTime
 		}
+		sch.summaryMu.Lock()
 		sch.summary.Total++
 		switch r.action {
 		case actionRelease:
@@ -893,8 +939,16 @@ func (sch *Sched) collectResults(wg *sync.WaitGroup) {
 		}
 		fmt.Printf("\rdial succed: %7d\t released: %7d\t trans failed: %7d",
 			sch.summary.Success, sch.summary.Released, sch.summary.Failed)
+		sch.summaryMu.Unlock()
 	}
 
+}
+
+// summaryString returns a consistent snapshot of the summary as a string.
+func (sch *Sched) summaryString() string {
+	sch.summaryMu.Lock()
+	defer sch.summaryMu.Unlock()
+	return sch.summary.String()
 }
 func (sch *Sched) Stop() {
 	close(sch.dialResultCh)
@@ -917,22 +971,23 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup, action action
 			time.Sleep(sch.setup.Interval)
 		}
 		threeRWG.Wait()
-		fmt.Printf("\n%v resutls are:\n%v", action, sch.summary)
+		fmt.Printf("\n%v resutls are:\n%v", action, sch.summaryString())
 	case actionDORA:
 		//save lease
 		var savectx context.Context
-		var savecancelf context.CancelFunc
+		savecancelf := func() {}
 		saveWG := new(sync.WaitGroup)
 		if sch.setup.DORA.SaveLease {
 			savectx, savecancelf = context.WithCancel(ctx)
 			saveWG.Add(1)
-			go saveLeaseToFiles(savectx, saveWG, sch.setup.saveV4Chan,
-				sch.setup.saveV6Chan, sch.setup.LeaseFile)
+			go sch.setup.getLeaseStore().save(savectx, saveWG,
+				sch.setup.saveV4Chan, sch.setup.saveV6Chan)
 		}
+		// release the save context on every exit path
+		defer func() { savecancelf() }()
 		//intial dialing
 		wg := new(sync.WaitGroup)
 
-		var err error
 		for _, c := range sch.ClntList {
 			wg.Add(1)
 			go c.dialAll(wg)
@@ -945,20 +1000,18 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup, action action
 			savecancelf()
 			saveWG.Wait()
 		}
-		fmt.Printf("\ninitial dialing resutls are:\n%v", sch.summary)
+		fmt.Printf("\ninitial dialing resutls are:\n%v", sch.summaryString())
 		if sch.setup.DORA.Flapping != nil {
 			if sch.setup.DORA.Flapping.FlapNum > 0 {
 				for _, cc := range sch.ClntList {
-					if cc.d4OtherClnt == nil && cc.d4Lease != nil {
-						err = cc.createV4OtherClnt(actionRelease)
-						if err != nil {
+					if !cc.hasV4OtherClnt() && cc.hasV4Lease() {
+						if err := cc.createV4OtherClnt(actionRelease); err != nil {
 							common.MyLog("%v", err)
 							return
 						}
 					}
-					if cc.d6OtherClnt == nil && cc.d6Lease != nil {
-						err = cc.createV6OtherClnt()
-						if err != nil {
+					if !cc.hasV6OtherClnt() && cc.hasV6Lease() {
+						if err := cc.createV6OtherClnt(); err != nil {
 							common.MyLog("%v", err)
 							return
 						}
@@ -966,23 +1019,26 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup, action action
 				}
 				fmt.Printf("\nstart flapping %d clients...\n", sch.setup.DORA.Flapping.FlapNum)
 				intervalRange := sch.setup.DORA.Flapping.MaxInterval - sch.setup.DORA.Flapping.MinInterval
-				flapFunc := func(ctx context.Context, dc *DClient, wg *sync.WaitGroup) {
+				flapFunc := func(ctx context.Context, dc dclient, wg *sync.WaitGroup) {
 					defer wg.Done()
+					jitter := time.Duration(0)
+					if intervalRange > 0 {
+						jitter = time.Duration(rand.Int63n(int64(intervalRange)))
+					}
 					for {
 						select {
 						case <-ctx.Done():
 							return
 						default:
 						}
-						time.Sleep(sch.setup.DORA.Flapping.MinInterval + time.Duration(rand.Int63n(int64(intervalRange))))
+						time.Sleep(sch.setup.DORA.Flapping.MinInterval + jitter)
 						select {
 						case <-ctx.Done():
 							return
 						default:
 						}
-						if dc.d4Lease != nil {
-							err = dc.releasev4(nil)
-							if err != nil {
+						if dc.hasV4Lease() {
+							if err := dc.releasev4(nil); err != nil {
 								common.MyLog("%v", err)
 							}
 						}
@@ -991,9 +1047,8 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup, action action
 							return
 						default:
 						}
-						if dc.d6Lease != nil {
-							err = dc.releaseOrRenewV6(nil, dhcpv6.MessageTypeRelease)
-							if err != nil {
+						if dc.hasV6Lease() {
+							if err := dc.releaseOrRenewV6(nil, dhcpv6.MessageTypeRelease); err != nil {
 								common.MyLog("%v", err)
 							}
 						}
@@ -1014,13 +1069,15 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup, action action
 				i := 0
 				wg = new(sync.WaitGroup)
 				for _, dc := range sch.ClntList {
-					if i < sch.setup.DORA.Flapping.FlapNum {
-						wg.Add(1)
-						go flapFunc(ctx, dc, wg)
+					if i >= sch.setup.DORA.Flapping.FlapNum {
+						break
 					}
+					i++
+					wg.Add(1)
+					go flapFunc(ctx, dc, wg)
 				}
 				wg.Wait()
-				fmt.Printf("\nFinal result:\n%v", sch.summary)
+				fmt.Printf("\nFinal result:\n%v", sch.summaryString())
 			}
 		}
 

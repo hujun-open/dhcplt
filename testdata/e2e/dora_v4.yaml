@@ -1,0 +1,17 @@
+# E2E DHCPv4 DORA config used by e2e_test.go. The client runs on interface "C"
+# of a veth pair (peer "S" hosts the in-process DHCPv4 server). startmac must
+# begin with aa:bb because the test server encodes the assigned address from the
+# client MAC's last 4 bytes.
+ifname: C
+driver: afpkt
+enablev4: true
+enablev6: false
+interval: 0s
+timeout: 3s
+retry: 2
+dora:
+  numofclients: 4
+  startmac: aa:bb:cc:11:22:33
+  macstep: 1
+  startvlans: 100
+  vlanstep: 0

@@ -1,40 +1,61 @@
-# This is a basic workflow to help you get started with Actions
-
 name: CI
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the master branch
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+  schedule:
+    # nightly e2e run at 04:17 UTC
+    - cron: '17 4 * * *'
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+permissions:
+  contents: read
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  test:
+    name: Unit & component tests
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: setup up GO
-        uses: actions/setup-go@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
-      - name: install dep
-        run: sudo apt-get -y install libpcap-dev kea-dhcp4-server kea-dhcp6-server
-      - name: download go dep
-        run: go get -t -v ./...
+          go-version-file: go.mod
+          cache: true
 
+      # etherconn links against libpcap (gopacket/pcap), so the headers are
+      # needed to build and link even though the tests never open a pcap handle.
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Test
-        run: sudo -E env "PATH=$PATH" go test -failfast -p 1 -v
+        run: go test -race -count=1 ./...
+
+  e2e:
+    name: E2E (network namespace)
+    # root is required to create a netns and raw sockets; run nightly or on demand
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Run e2e tests
+        run: sudo -E env "PATH=$PATH" go test -tags e2e -count=1 -run '^TestE2E' -v .

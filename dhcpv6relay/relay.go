@@ -179,7 +179,7 @@ func (relay *RelayAgent) recvNetwork(ctx context.Context) {
 			continue
 		}
 		if msg.MessageType != dhcpv6.MessageTypeRelayReply {
-			common.MyLog("drop an %v msg from svr %v", msg.MessageType)
+			common.MyLog("drop an %v msg from svr %v", msg.MessageType, peerAddr)
 			continue
 		}
 		common.MyLog("got a relay-reply %v", msg.Summary())
