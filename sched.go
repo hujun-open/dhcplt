@@ -406,13 +406,13 @@ func (dc *DClient) dialv6(wg *sync.WaitGroup) error {
 		return fmt.Errorf("dhcpv6 is not configured")
 	}
 	checkResp := func(msg *dhcpv6.Message) error {
-		if dc.cfg.setup.NeedNA {
+		if dc.cfg.setup.DORA.NeedNA {
 
 			if len(msg.Options.OneIANA().Options.Addresses()) == 0 {
 				return fmt.Errorf("no IANA address is assigned")
 			}
 		}
-		if dc.cfg.setup.NeedPD {
+		if dc.cfg.setup.DORA.NeedPD {
 			if len(msg.Options.OneIAPD().Options.Prefixes()) == 0 {
 				return fmt.Errorf("no IAPD prefix is assigned")
 			}
@@ -496,7 +496,7 @@ func (dc *DClient) dialv6(wg *sync.WaitGroup) error {
 		RelayIDOptions: dc.cfg.V6RelayOptions,
 	}
 	dc.d6Lease = lease
-	if dc.cfg.setup.ApplyLease {
+	if dc.cfg.setup.DORA.ApplyLease {
 		err = lease.Apply(dc.cfg.setup.Ifname, true)
 		if err != nil {
 			return fmt.Errorf("failed to apply v6 lease for clnt %v, %v", dc.id, err)
@@ -547,7 +547,7 @@ func (dc *DClient) dialv4(wg *sync.WaitGroup) error {
 	myl := myDHCPv4Lease(*lease)
 	dc.d4Lease.Lease = &myl
 	dc.d4Lease.VLANList = dc.cfg.VLANs
-	if dc.cfg.setup.ApplyLease {
+	if dc.cfg.setup.DORA.ApplyLease {
 		err = dc.d4Lease.Apply(dc.cfg.setup.Ifname, true)
 		if err != nil {
 			return fmt.Errorf("failed to apply v4 lease for clnt %v, %v", dc.id, err)
@@ -705,13 +705,13 @@ const (
 	dialResultChanLen = 1024
 )
 
-func NewSched(setup *testSetup) (*Sched, error) {
+func NewSched(setup *testSetup, action actionType) (*Sched, error) {
 	r := new(Sched)
 	r.setup = setup
 	r.ClntList = make(map[clientID]*DClient)
 	r.summary = newResultSummary(setup)
 	r.dialResultCh = make(chan *dialResult, dialResultChanLen)
-	if setup.Action != actionDORA {
+	if action != actionDORA {
 		saveLeases, err := loadLeaseFromFile(setup.LeaseFile)
 		if err != nil {
 			log.Fatal(err)
@@ -774,7 +774,7 @@ func NewSched(setup *testSetup) (*Sched, error) {
 		}
 
 		if dc.cfg.v6econn != nil {
-			if dc.cfg.setup.SendRSFirst {
+			if dc.cfg.setup.DORA.SendRSFirst {
 				err := dc.sendRS()
 				if err != nil {
 					return nil, fmt.Errorf("client %v %v failed to get RA,%w", dc.id, dc.cfg.Mac, err)
@@ -899,31 +899,31 @@ func (sch *Sched) collectResults(wg *sync.WaitGroup) {
 func (sch *Sched) Stop() {
 	close(sch.dialResultCh)
 }
-func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
+func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup, action actionType) {
 	defer taskWG.Done()
 	otherTG := new(sync.WaitGroup)
 	otherTG.Add(1)
 	go sch.collectResults(otherTG)
 	//check save lease
-	switch sch.setup.Action {
+	switch action {
 	default:
-		log.Fatal("invalid action", sch.setup.Action)
+		log.Fatal("invalid action", action)
 
 	case actionRelease, actionRenew, actionRebind:
 		threeRWG := new(sync.WaitGroup)
 		for _, c := range sch.ClntList {
 			threeRWG.Add(1)
-			go c.threeRAll(ctx, threeRWG, sch.setup.Action)
+			go c.threeRAll(ctx, threeRWG, action)
 			time.Sleep(sch.setup.Interval)
 		}
 		threeRWG.Wait()
-		fmt.Printf("\n%v resutls are:\n%v", sch.setup.Action, sch.summary)
+		fmt.Printf("\n%v resutls are:\n%v", action, sch.summary)
 	case actionDORA:
 		//save lease
 		var savectx context.Context
 		var savecancelf context.CancelFunc
 		saveWG := new(sync.WaitGroup)
-		if sch.setup.SaveLease {
+		if sch.setup.DORA.SaveLease {
 			savectx, savecancelf = context.WithCancel(ctx)
 			saveWG.Add(1)
 			go saveLeaseToFiles(savectx, saveWG, sch.setup.saveV4Chan,
@@ -941,13 +941,13 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 		wg.Wait()
 		common.MyLog("dial finished")
 		time.Sleep(time.Second)
-		if sch.setup.SaveLease {
+		if sch.setup.DORA.SaveLease {
 			savecancelf()
 			saveWG.Wait()
 		}
 		fmt.Printf("\ninitial dialing resutls are:\n%v", sch.summary)
-		if sch.setup.Flapping != nil {
-			if sch.setup.Flapping.FlapNum > 0 {
+		if sch.setup.DORA.Flapping != nil {
+			if sch.setup.DORA.Flapping.FlapNum > 0 {
 				for _, cc := range sch.ClntList {
 					if cc.d4OtherClnt == nil && cc.d4Lease != nil {
 						err = cc.createV4OtherClnt(actionRelease)
@@ -964,8 +964,8 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 						}
 					}
 				}
-				fmt.Printf("\nstart flapping %d clients...\n", sch.setup.Flapping.FlapNum)
-				intervalRange := sch.setup.Flapping.MaxInterval - sch.setup.Flapping.MinInterval
+				fmt.Printf("\nstart flapping %d clients...\n", sch.setup.DORA.Flapping.FlapNum)
+				intervalRange := sch.setup.DORA.Flapping.MaxInterval - sch.setup.DORA.Flapping.MinInterval
 				flapFunc := func(ctx context.Context, dc *DClient, wg *sync.WaitGroup) {
 					defer wg.Done()
 					for {
@@ -974,7 +974,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 							return
 						default:
 						}
-						time.Sleep(sch.setup.Flapping.MinInterval + time.Duration(rand.Int63n(int64(intervalRange))))
+						time.Sleep(sch.setup.DORA.Flapping.MinInterval + time.Duration(rand.Int63n(int64(intervalRange))))
 						select {
 						case <-ctx.Done():
 							return
@@ -1002,7 +1002,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 							return
 						default:
 						}
-						time.Sleep(sch.setup.Flapping.StayDownDur)
+						time.Sleep(sch.setup.DORA.Flapping.StayDownDur)
 						select {
 						case <-ctx.Done():
 							return
@@ -1014,7 +1014,7 @@ func (sch *Sched) run(ctx context.Context, taskWG *sync.WaitGroup) {
 				i := 0
 				wg = new(sync.WaitGroup)
 				for _, dc := range sch.ClntList {
-					if i < sch.setup.Flapping.FlapNum {
+					if i < sch.setup.DORA.Flapping.FlapNum {
 						wg.Add(1)
 						go flapFunc(ctx, dc, wg)
 					}
@@ -1039,10 +1039,10 @@ func buildSolicit(ccfg clientConfig) (*dhcpv6.Message, error) {
 	for _, o := range ccfg.V6Options {
 		optModList = append(optModList, dhcpv6.WithOption(o))
 	}
-	if ccfg.setup.NeedNA {
+	if ccfg.setup.DORA.NeedNA {
 		optModList = append(optModList, dhcpv6.WithIAID(getIAIDviaInt(0)))
 	}
-	if ccfg.setup.NeedPD {
+	if ccfg.setup.DORA.NeedPD {
 		optModList = append(optModList, dhcpv6.WithIAPD(getIAIDviaInt(1)))
 	}
 	duid := &dhcpv6.DUIDLLT{

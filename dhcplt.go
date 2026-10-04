@@ -20,8 +20,10 @@ import (
 
 	"time"
 
+	"github.com/hujun-open/completers"
 	"github.com/hujun-open/dhcplt/common"
-	"github.com/hujun-open/shouchan"
+	myflags "github.com/hujun-open/myflags/v2"
+	"github.com/spf13/cobra"
 
 	mv "github.com/RobinUS2/golang-moving-average"
 	"github.com/hujun-open/etherconn"
@@ -144,22 +146,58 @@ func handleCtrlC(c chan os.Signal, cf context.CancelFunc) {
 	cf()
 }
 
+func (setup *testSetup) DoraAct(cmd *cobra.Command, args []string) {
+
+}
+func (setup *testSetup) RenewAct(cmd *cobra.Command, args []string) {
+
+}
+func (setup *testSetup) RebindAct(cmd *cobra.Command, args []string) {
+
+}
+func (setup *testSetup) ReleaseAct(cmd *cobra.Command, args []string) {
+
+}
+
 func main() {
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	cnf, err := shouchan.NewSConf(newDefaultConf(), "dhcplt",
-		fmt.Sprintf("a DHCP load tester, %v", VERSION), shouchan.WithDefaultConfigFilePath[*testSetup]("dhcplt.conf"))
+	setup := newDefaultConf()
+	filler := myflags.NewFiller("dhcplt", "DHCP load tester")
+	filler.Version = "1.0"
+	err := filler.Fill(setup)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	cnf.ReadwithCMDLine()
-	setup := cnf.GetConf()
-	// fmt.Printf("%+v\n", setup)
-	err = setup.init()
+	err = filler.Command.RegisterFlagCompletionFunc("ifname", completers.InterfaceNameCompletion)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cmd, err := filler.ExecuteC()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if myflags.IsOwnAction(cmd, "", "", true) {
+		return
+	}
+	var act actionType
+	err = act.UnmarshalText([]byte(cmd.Name()))
+	if err != nil {
+		log.Fatal(err)
+	}
+	// cnf, err := shouchan.NewSConf(newDefaultConf(), "dhcplt",
+	// 	fmt.Sprintf("a DHCP load tester, %v", VERSION), shouchan.WithDefaultConfigFilePath[*testSetup]("dhcplt.conf"))
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// cnf.ReadwithCMDLine()
+	// setup := cnf.GetConf()
+	err = setup.init(act)
 	if err != nil {
 		log.Fatalf("invalid setup, %v", err)
 	}
+	// fmt.Printf("%+v\n", setup)
 	if setup.Profiling {
 		runtime.SetBlockProfileRate(1000000000)
 		go func() {
@@ -167,11 +205,10 @@ func main() {
 		}()
 
 	}
-
 	if setup.Debug {
 		common.Logger = log.New(os.Stderr, "", log.Ldate|log.Ltime)
 	}
-	sch, err := NewSched(setup)
+	sch, err := NewSched(setup, act)
 	if err != nil {
 		common.MyLog("failed to create sched, %v", err)
 		return
@@ -179,7 +216,7 @@ func main() {
 	ctx, cancelf := context.WithCancel(context.Background())
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
-	go sch.run(ctx, wg)
+	go sch.run(ctx, wg, act)
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go handleCtrlC(c, cancelf)

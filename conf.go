@@ -4,78 +4,130 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hujun-open/etherconn"
-	"github.com/hujun-open/shouchan"
+	myflags "github.com/hujun-open/myflags/v2"
+	"github.com/hujun-open/myflags/v2/types"
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv6"
 )
 
+// type flagConverter struct {
+// 	from myflags.FromStrFunc
+// 	to   myflags.ToStrFunc
+// }
+
+// func (fc *flagConverter) ToStr(in any, tag reflect.StructTag) string {
+// 	return fc.to(in, tag)
+// }
+
+// func (fc *flagConverter) FromStr(s string, tag reflect.StructTag) (any, error) {
+// 	return fc.from(s, tag)
+// }
+
 func init() {
-	shouchan.Register[dhcpv4.Option](d4OptionToStr, d4OptionFromStr)
-	shouchan.Register[dhcpv6.OptionGeneric](d6OptionToStr, d6OptionFromStr)
-	shouchan.Register[dhcpv6.MessageType](d6MsgTypeToStr, d6MsgTypeFromStr)
+	myflags.Register[dhcpv4.Option](
+		&types.FlagConverter{
+			From: d4OptionFromStrMyflags,
+			To:   d4OptionToStrMyflags,
+		})
+	myflags.Register[dhcpv6.OptionGeneric](
+		&types.FlagConverter{
+			From: d6OptionFromStrMyflags,
+			To:   d6OptionToStrMyflags,
+		})
+	myflags.Register[dhcpv6.MessageType](
+		&types.FlagConverter{
+			From: d6MsgTypeFromStrMyflags,
+			To:   d6MsgTypeToStrMyflags,
+		})
 }
 
-type testSetup struct {
-	Ifname       string           `alias:"i" usage:"interface name"`
-	NumOfClients uint             `alias:"n" usage:"number of clients"`
-	StartMAC     net.HardwareAddr `alias:"mac" usage:"starting MAC address"`
-	MacStep      uint             `usage:"amount of increase between two consecutive MAC address"`
-	StartVLANs   etherconn.VLANs  `alias:"vlan" usage:"starting VLAN ID, Dot1Q or QinQ"`
-	VLANEType    uint             `usage:"EthernetType for the vlan tag" base:"16"`
-	VLANStep     uint             `usage:"amount of increase between two consecutive VLAN ID"`
-
+type doraStruct struct {
+	NumOfClients   uint                 `short:"n" usage:"number of clients"`
+	StartMAC       net.HardwareAddr     `alias:"mac" usage:"starting MAC address, use interface mac if not specified"`
+	MacStep        uint                 `usage:"amount of increase between two consecutive MAC address"`
+	StartVLANs     etherconn.VLANs      `alias:"vlan" usage:"starting VLAN ID, Dot1Q or QinQ"`
+	VLANEType      uint                 `usage:"EthernetType for the vlan tag" base:"16"`
+	VLANStep       uint                 `usage:"amount of increase between two consecutive VLAN ID"`
 	ExcludedVLANs  []uint16             `usage:"a list of excluded VLAN IDs"`
-	Interval       time.Duration        `usage:"interval between setup of sessions"`
 	CustomV4Option dhcpv4.Option        `usage:"custom DHCPv4 option, code:value format"`
 	CustomV6Option dhcpv6.OptionGeneric `usage:"custom DHCPv6 option, code:value format"`
 	v4Options      []dhcpv4.Option
 	v6Options      dhcpv6.Options //non-relay specific options
-	Debug          bool           `alias:"d" usage:"enable debug output"`
 	SaveLease      bool           `usage:"save the lease if true"`
 	ApplyLease     bool           `usage:"apply assigned address on the interface if true"`
-	Retry          uint           `usage:"number of setup retry"`
-	Timeout        time.Duration  `usage:"setup timout"`
-	GiAddr         netip.Addr     `usage:"Gi address for DHCPv4, simulating relay agent"`
-	SourceV4Addr   netip.Addr     `usage:"source address for DHCPv4" alias:"srcv4"`
-	SourceV6Port   uint16         `usage:"source port for egress DHCPv6 message" alias:"srcv6port"`
-	SourceV4Port   uint16         `usage:"source port for egress DHCPv4 message" alias:"srcv4port"`
-	//following are template str, $ID will be replaced by client id
+
 	RID         string `usage:"BBF remote-id" `
 	CID         string `usage:"BBF circuit-id"`
 	ClntID      string `usage:"client-id"`
 	VendorClass string `usage:"vendor class"`
-	EnableV4    bool   `alias:"v4" usage:"do DHCPv4 if true"`
+
+	NeedNA      bool          `usage:"request DHCPv6 IANA if true"`
+	NeedPD      bool          `usage:"request DHCPv6 IAPD if true"`
+	Flapping    *FlappingConf `usage:"enable flapping"`
+	SendRSFirst bool          `usage:"send Router Solict first if true"`
+}
+
+type testSetup struct {
+	Ifname string     `short:"i" usage:"interface name"`
+	DORA   doraStruct `action:"" usage:"get address from server"`
+	Renew  struct {
+		Dummy string
+	} `usage:"renew leases" action:""`
+	ZipFile struct {
+		Dummy2 string
+	} `usage:"test action" action:""`
+	Rebind       struct{}      `action:"" usage:"rebind lease"`
+	Release      struct{}      `action:"" usage:"release lease"`
+	GiAddr       netip.Addr    `usage:"Gi address for DHCPv4, simulating relay agent"`
+	Interval     time.Duration `usage:"interval between setup of sessions"`
+	Debug        bool          `short:"d" usage:"enable debug output"`
+	Retry        uint          `usage:"number of setup retry"`
+	Timeout      time.Duration `usage:"setup timout"`
+	SourceV4Addr netip.Addr    `usage:"source address for DHCPv4" alias:"srcv4"`
+	SourceV6Port uint16        `usage:"source port for egress DHCPv6 message" alias:"srcv6port"`
+	SourceV4Port uint16        `usage:"source port for egress DHCPv4 message" alias:"srcv4port"`
+	//following are template str, $ID will be replaced by client id
+	EnableV4 bool `alias:"v4" usage:"do DHCPv4 if true"`
 	//v6 specific
 	EnableV6     bool               `alias:"v6" usage:"do DHCPv6 if true"`
+	V6MsgType    dhcpv6.MessageType `usage:"DHCPv6 exchange type, solict|relay|auto" choices:"solict,relay,auto"`
 	SourceV6Addr netip.Addr         `usage:"source address for DHCPv6" alias:"srcv6"`
 	StackDelay   time.Duration      `usage:"delay between setup v4 and v6, postive value means setup v4 first, negative means v6 first"`
-	V6MsgType    dhcpv6.MessageType `usage:"DHCPv6 exchange type, solict|relay|auto" `
-	NeedNA       bool               `usage:"request DHCPv6 IANA if true"`
-	NeedPD       bool               `usage:"request DHCPv6 IAPD if true"`
 	pktRelay     etherconn.PacketRelay
 	Driver       etherconn.RelayType `usage:"etherconn forward engine"`
-	Flapping     *FlappingConf       `usage:"enable flapping"`
-	SendRSFirst  bool                `usage:"send Router Solict first if true"`
-	Profiling    bool                `usage:"enable profiling, dev use only"`
-	LeaseFile    string
-	Action       actionType `usage:"dora | release | renew | rebind"`
-	saveV4Chan   chan *v4LeaseWithID
-	saveV6Chan   chan *v6LeaseWithID
+
+	Profiling bool `usage:"enable profiling, dev use only"`
+	LeaseFile string
+
+	saveV4Chan chan *v4LeaseWithID
+	saveV6Chan chan *v6LeaseWithID
 }
 
 func newDefaultConf() *testSetup {
 	return &testSetup{
-		Action:       actionDORA,
-		NumOfClients: 1,
-		StartMAC:     []byte{},
-		MacStep:      1,
-		VLANEType:    etherconn.DefaultVLANEtype,
-		VLANStep:     1,
+		DORA: doraStruct{
+			NumOfClients: 1,
+			StartMAC:     []byte{},
+			MacStep:      1,
+			VLANEType:    etherconn.DefaultVLANEtype,
+			VLANStep:     1,
+
+			NeedNA: true,
+
+			Flapping: &FlappingConf{
+				FlapNum:     0,
+				MinInterval: defaultMinFlapInt,
+				MaxInterval: defualtMaxFlapInt,
+				StayDownDur: 10 * time.Second,
+			},
+		},
+
 		Interval:     time.Second,
 		GiAddr:       netip.MustParseAddr("0.0.0.0"),
 		SourceV4Addr: netip.MustParseAddr("0.0.0.0"),
@@ -84,24 +136,18 @@ func newDefaultConf() *testSetup {
 		Timeout:      5 * time.Second,
 		EnableV4:     true,
 		EnableV6:     false,
+		V6MsgType:    dhcpv6.MessageTypeNone,
 		SourceV6Port: dhcpv6.DefaultClientPort,
 		SourceV4Port: dhcpv4.ClientPort,
-		NeedNA:       true,
-		V6MsgType:    dhcpv6.MessageTypeNone,
-		Driver:       etherconn.RelayTypeAFP,
-		LeaseFile:    "dhcplt.lease",
-		Flapping: &FlappingConf{
-			FlapNum:     0,
-			MinInterval: defaultMinFlapInt,
-			MaxInterval: defualtMaxFlapInt,
-			StayDownDur: 10 * time.Second,
-		},
+
+		Driver:    etherconn.RelayTypeAFP,
+		LeaseFile: "dhcplt.lease",
 	}
 }
 
 func (setup *testSetup) excluded(vids []uint16) bool {
 	for _, vid := range vids {
-		for _, extv := range setup.ExcludedVLANs {
+		for _, extv := range setup.DORA.ExcludedVLANs {
 			if extv == vid {
 				return true
 			}
@@ -112,11 +158,11 @@ func (setup *testSetup) excluded(vids []uint16) bool {
 
 const saveChanDepth = 8
 
-func (setup *testSetup) init() error {
+func (setup *testSetup) init(action actionType) error {
 	if setup.Ifname == "" {
 		return fmt.Errorf("interface name can't be empty")
 	}
-	if setup.NumOfClients <= 0 {
+	if setup.DORA.NumOfClients <= 0 {
 		return fmt.Errorf("number of clients can't be zero")
 	}
 	var iff *net.Interface
@@ -126,8 +172,8 @@ func (setup *testSetup) init() error {
 	if err != nil {
 		return fmt.Errorf("can't find interface %v,%w", setup.Ifname, err)
 	}
-	if len(setup.StartMAC) == 0 {
-		setup.StartMAC = iff.HardwareAddr
+	if len(setup.DORA.StartMAC) == 0 {
+		setup.DORA.StartMAC = iff.HardwareAddr
 	}
 
 	if !setup.EnableV4 && !setup.EnableV6 {
@@ -166,35 +212,35 @@ func (setup *testSetup) init() error {
 		}
 	}
 
-	if setup.NumOfClients == 0 {
+	if setup.DORA.NumOfClients == 0 {
 		return fmt.Errorf("number of client is 0")
 	}
-	for _, v := range setup.StartVLANs {
-		v.EtherType = uint16(setup.VLANEType)
+	for _, v := range setup.DORA.StartVLANs {
+		v.EtherType = uint16(setup.DORA.VLANEType)
 	}
 
-	setup.ExcludedVLANs = []uint16{}
-	for _, n := range setup.ExcludedVLANs {
+	setup.DORA.ExcludedVLANs = []uint16{}
+	for _, n := range setup.DORA.ExcludedVLANs {
 		if n > 4096 {
 			return fmt.Errorf("%v is not valid vlan number", n)
 		}
-		setup.ExcludedVLANs = append(setup.ExcludedVLANs, n)
+		setup.DORA.ExcludedVLANs = append(setup.DORA.ExcludedVLANs, n)
 	}
-	if setup.VendorClass != "" {
-		setup.v4Options = append(setup.v4Options, dhcpv4.OptClassIdentifier(setup.VendorClass))
-		setup.v6Options.Add(&dhcpv6.OptVendorClass{
+	if setup.DORA.VendorClass != "" {
+		setup.DORA.v4Options = append(setup.DORA.v4Options, dhcpv4.OptClassIdentifier(setup.DORA.VendorClass))
+		setup.DORA.v6Options.Add(&dhcpv6.OptVendorClass{
 			EnterpriseNumber: BBFEnterpriseNumber,
-			Data:             [][]byte{[]byte(setup.VendorClass)},
+			Data:             [][]byte{[]byte(setup.DORA.VendorClass)},
 		})
 	}
-	if setup.CustomV4Option.Code != nil {
-		setup.v4Options = append(setup.v4Options, setup.CustomV4Option)
+	if setup.DORA.CustomV4Option.Code != nil {
+		setup.DORA.v4Options = append(setup.DORA.v4Options, setup.DORA.CustomV4Option)
 	}
-	if setup.CustomV6Option.OptionCode != 0 {
-		setup.v6Options = append(setup.v6Options, &setup.CustomV6Option)
+	if setup.DORA.CustomV6Option.OptionCode != 0 {
+		setup.DORA.v6Options = append(setup.DORA.v6Options, &setup.DORA.CustomV6Option)
 	}
 	if setup.V6MsgType == dhcpv6.MessageTypeNone {
-		if setup.RID != "" || setup.CID != "" {
+		if setup.DORA.RID != "" || setup.DORA.CID != "" {
 			setup.V6MsgType = dhcpv6.MessageTypeRelayForward
 		} else {
 			setup.V6MsgType = dhcpv6.MessageTypeSolicit
@@ -205,14 +251,14 @@ func (setup *testSetup) init() error {
 	if err != nil {
 		return err
 	}
-	if setup.Flapping.FlapNum > int(setup.NumOfClients) {
-		return fmt.Errorf("flapping number %d can't be bigger than client number %d", setup.Flapping.FlapNum, setup.NumOfClients)
+	if setup.DORA.Flapping.FlapNum > int(setup.DORA.NumOfClients) {
+		return fmt.Errorf("flapping number %d can't be bigger than client number %d", setup.DORA.Flapping.FlapNum, setup.DORA.NumOfClients)
 	}
-	if setup.Flapping.MinInterval > setup.Flapping.MaxInterval {
-		return fmt.Errorf("minimal flapping interval %v is bigger than max value %v", setup.Flapping.MinInterval, setup.Flapping.MaxInterval)
+	if setup.DORA.Flapping.MinInterval > setup.DORA.Flapping.MaxInterval {
+		return fmt.Errorf("minimal flapping interval %v is bigger than max value %v", setup.DORA.Flapping.MinInterval, setup.DORA.Flapping.MaxInterval)
 	}
 
-	if setup.SaveLease || setup.Action == actionRelease {
+	if setup.DORA.SaveLease || action == actionRelease {
 		if setup.EnableV4 {
 			setup.saveV4Chan = make(chan *v4LeaseWithID, saveChanDepth)
 		}
@@ -268,7 +314,14 @@ func d4OptionFromStr(text string) (any, error) {
 	}
 	return parseD4CustomOptionStr(text)
 }
+func d4OptionFromStrMyflags(text string, tags reflect.StructTag) (any, error) {
+	return d4OptionFromStr(text)
+}
 
+func d4OptionToStrMyflags(in any, tag reflect.StructTag) string {
+	str, _ := d4OptionToStr(in)
+	return str
+}
 func d4OptionToStr(in any) (string, error) {
 	if in == nil {
 		return "", nil
@@ -293,6 +346,15 @@ func d6OptionFromStr(text string) (any, error) {
 	return parseD6CustomOptionStr(text)
 }
 
+func d6OptionFromStrMyflags(text string, tags reflect.StructTag) (any, error) {
+	return d6OptionFromStr(text)
+}
+
+func d6OptionToStrMyflags(in any, tag reflect.StructTag) string {
+	str, _ := d6OptionToStr(in)
+	return str
+}
+
 func d6OptionToStr(in any) (string, error) {
 	v := in.(dhcpv6.OptionGeneric)
 	if v.OptionCode == 0 {
@@ -313,10 +375,19 @@ func d6MsgTypeFromStr(text string) (any, error) {
 	return nil, fmt.Errorf("unsupported DHCPv6 type: %v", text)
 }
 
+func d6MsgTypeFromStrMyflags(text string, tags reflect.StructTag) (any, error) {
+	return d6MsgTypeFromStr(text)
+}
+
 func d6MsgTypeToStr(in any) (string, error) {
 	v := in.(dhcpv6.MessageType)
 	if v == dhcpv6.MessageTypeNone {
 		return "auto", nil
 	}
 	return strings.ToLower(v.String()), nil
+}
+
+func d6MsgTypeToStrMyflags(in any, tag reflect.StructTag) string {
+	str, _ := d6MsgTypeToStr(in)
+	return str
 }

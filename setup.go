@@ -26,16 +26,16 @@ type clientConfig struct {
 
 func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 	r := []clientConfig{}
-	clntmac := setup.StartMAC
-	vlans := setup.StartVLANs
+	clntmac := setup.DORA.StartMAC
+	vlans := setup.DORA.StartVLANs
 	var err error
-	for i := 0; i < int(setup.NumOfClients); i++ {
+	for i := 0; i < int(setup.DORA.NumOfClients); i++ {
 		ccfg := clientConfig{}
 		ccfg.setup = setup
 		//assign mac
 		ccfg.Mac = clntmac
 		if i > 0 {
-			ccfg.Mac, err = myaddr.IncMACAddr(clntmac, big.NewInt(int64(setup.MacStep)))
+			ccfg.Mac, err = myaddr.IncMACAddr(clntmac, big.NewInt(int64(setup.DORA.MacStep)))
 			if err != nil {
 				return []clientConfig{}, fmt.Errorf("failed to generate mac address,%v", err)
 			}
@@ -70,7 +70,7 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 		}
 
 		if (len(vlans) > 0 && i > 0) || setup.excluded(vlans.IDs()) {
-			rids, err := incvidFunc(vlans.IDs(), setup.ExcludedVLANs, int(setup.VLANStep))
+			rids, err := incvidFunc(vlans.IDs(), setup.DORA.ExcludedVLANs, int(setup.DORA.VLANStep))
 			if err != nil {
 				return []clientConfig{}, fmt.Errorf("failed to generate vlan id,%v", err)
 			}
@@ -82,9 +82,9 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 		vlans = ccfg.VLANs
 		//options
 		ccfg.V4Options = []dhcpv4.Option{}
-		ccfg.V4Options = append(ccfg.V4Options, setup.v4Options...)
+		ccfg.V4Options = append(ccfg.V4Options, setup.DORA.v4Options...)
 		ccfg.V6Options = []dhcpv6.Option{}
-		ccfg.V6Options = append(ccfg.V6Options, setup.v6Options...)
+		ccfg.V6Options = append(ccfg.V6Options, setup.DORA.v6Options...)
 		genStrFunc := func(s string, id int) string {
 			const varname = "@ID"
 			if strings.Contains(s, varname) {
@@ -94,30 +94,30 @@ func genClientConfigurations(setup *testSetup) ([]clientConfig, error) {
 			return s
 		}
 
-		if setup.RID != "" || setup.CID != "" {
+		if setup.DORA.RID != "" || setup.DORA.CID != "" {
 			subOptList := []dhcpv4.Option{}
-			if setup.RID != "" {
-				subOptList = append(subOptList, dhcpv4.OptGeneric(dhcpv4.AgentRemoteIDSubOption, []byte(genStrFunc(setup.RID, i))))
+			if setup.DORA.RID != "" {
+				subOptList = append(subOptList, dhcpv4.OptGeneric(dhcpv4.AgentRemoteIDSubOption, []byte(genStrFunc(setup.DORA.RID, i))))
 				ccfg.V6RelayOptions.Add(&dhcpv6.OptRemoteID{
 					EnterpriseNumber: BBFEnterpriseNumber,
-					RemoteID:         []byte(genStrFunc(setup.RID, i)),
+					RemoteID:         []byte(genStrFunc(setup.DORA.RID, i)),
 				})
 			}
-			if setup.CID != "" {
-				subOptList = append(subOptList, dhcpv4.OptGeneric(dhcpv4.AgentCircuitIDSubOption, []byte(genStrFunc(setup.CID, i))))
-				ccfg.V6RelayOptions.Add(dhcpv6.OptInterfaceID([]byte((genStrFunc(setup.CID, i)))))
+			if setup.DORA.CID != "" {
+				subOptList = append(subOptList, dhcpv4.OptGeneric(dhcpv4.AgentCircuitIDSubOption, []byte(genStrFunc(setup.DORA.CID, i))))
+				ccfg.V6RelayOptions.Add(dhcpv6.OptInterfaceID([]byte((genStrFunc(setup.DORA.CID, i)))))
 			}
 
 			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptRelayAgentInfo(subOptList...))
 
 		}
-		if setup.ClntID != "" {
-			common.MyLog("gened clnt id is %v", genStrFunc(setup.ClntID, i))
-			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptClientIdentifier([]byte(genStrFunc(setup.ClntID, i))))
+		if setup.DORA.ClntID != "" {
+			common.MyLog("gened clnt id is %v", genStrFunc(setup.DORA.ClntID, i))
+			ccfg.V4Options = append(ccfg.V4Options, dhcpv4.OptClientIdentifier([]byte(genStrFunc(setup.DORA.ClntID, i))))
 			ccfg.V6Options.Add(dhcpv6.OptClientID(
 				&dhcpv6.DUIDEN{
 					EnterpriseNumber:     BBFEnterpriseNumber,
-					EnterpriseIdentifier: []byte(genStrFunc(setup.ClntID, i)),
+					EnterpriseIdentifier: []byte(genStrFunc(setup.DORA.ClntID, i)),
 				}))
 		}
 		if setup.EnableV4 {
