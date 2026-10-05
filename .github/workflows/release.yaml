@@ -4,9 +4,11 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   releases-matrix:
-    permissions: write-all
     name: Release Go Binary
     runs-on: ubuntu-latest
     strategy:
@@ -16,10 +18,27 @@ jobs:
 
     steps:
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+
+    # A tag push does not create a GitHub Release, but go-release-action only
+    # uploads to an existing one, so create it first (idempotent).
+    - name: Create release if missing
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag
+        fi
+
     - uses: wangyoucao577/go-release-action@v1
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         goos: ${{ matrix.goos }}
         goarch: ${{ matrix.goarch }}
+        # required on a push trigger: there is no release in the event, so tell
+        # the action which release page to attach the assets to
+        release_tag: ${{ github.ref_name }}
         pre_command: "apt-get update && apt-get -y install libpcap-dev && go get ."
